@@ -1,0 +1,20 @@
+.git
+.gitignore
+.idea
+.vscode
+
+# Build outputs
+target
+!target/
+target/*
+!target/app-0.0.1-SNAPSHOT.jar
+frontend/node_modules
+frontend/node
+
+# Runtime/dev artifacts
+logs
+*.log
+
+# Docs and local files
+README.md
+

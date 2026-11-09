@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.demo.mapper.TimesheetEntryMapper">
+
+    <resultMap id="TimesheetEntryResult" type="com.example.demo.model.TimesheetEntry">
+        <id property="id" column="id"/>
+        <result property="workDate" column="work_date"/>
+        <result property="userName" column="user_name"/>
+        <result property="startTime" column="start_time"/>
+        <result property="endTime" column="end_time"/>
+        <result property="note" column="note" typeHandler="com.example.demo.mybatis.EncryptedStringTypeHandler"/>
+        <result property="createdAt" column="created_at"/>
+        <result property="updatedAt" column="updated_at"/>
+        <result property="breakMinutes" column="break_minutes" javaType="java.lang.Integer"/>
+        <result property="durationMinutes" column="duration_minutes" javaType="java.lang.Integer"/>
+        <result property="workingMinutes" column="working_minutes" javaType="java.lang.Integer"/>
+        <result property="version" column="version" javaType="java.lang.Integer"/>
+        <result property="holidayWork" column="holiday_work" javaType="java.lang.Boolean"/>
+        <result property="workLocation" column="work_location"/>
+        <result property="irregularWorkType" column="irregular_work_type"/>
+        <result property="irregularWorkDesc" column="irregular_work_desc"
+                typeHandler="com.example.demo.mybatis.EncryptedStringTypeHandler"/>
+        <result property="irregularWorkData" column="irregular_work_data"/>
+        <result property="lateTime" column="late_time"/>
+        <result property="lateDesc" column="late_desc"
+                typeHandler="com.example.demo.mybatis.EncryptedStringTypeHandler"/>
+        <result property="earlyTime" column="early_time"/>
+        <result property="earlyDesc" column="early_desc"
+                typeHandler="com.example.demo.mybatis.EncryptedStringTypeHandler"/>
+        <result property="freeNote" column="free_note"
+                typeHandler="com.example.demo.mybatis.EncryptedStringTypeHandler"/>
+        <result property="paidLeave" column="paid_leave"/>
+    </resultMap>
+
+    <sql id="BaseColumns">
+        id, work_date, user_name, start_time, end_time, note, created_at, updated_at,
+        break_minutes, duration_minutes, working_minutes, version, holiday_work,
+        work_location, irregular_work_type, irregular_work_desc, irregular_work_data,
+        late_time, late_desc, early_time, early_desc, free_note, paid_leave
+    </sql>
+
+    <sql id="UpdateColumns">
+        start_time = #{startTime},
+        end_time = #{endTime},
+        note = #{note, typeHandler=com.example.demo.mybatis.EncryptedStringTypeHandler},
+        updated_at = NOW(),
+        break_minutes = #{breakMinutes},
+        duration_minutes = #{durationMinutes},
+        working_minutes = #{workingMinutes},
+        version = version + 1,
+        holiday_work = #{holidayWork},
+        work_location = #{workLocation},
+        irregular_work_type = #{irregularWorkType},
+        irregular_work_desc = #{irregularWorkDesc, typeHandler=com.example.demo.mybatis.EncryptedStringTypeHandler},
+        irregular_work_data = #{irregularWorkData},
+        late_time = #{lateTime},
+        late_desc = #{lateDesc, typeHandler=com.example.demo.mybatis.EncryptedStringTypeHandler},
+        early_time = #{earlyTime},
+        early_desc = #{earlyDesc, typeHandler=com.example.demo.mybatis.EncryptedStringTypeHandler},
+        free_note = #{freeNote, typeHandler=com.example.demo.mybatis.EncryptedStringTypeHandler},
+        paid_leave = #{paidLeave}
+    </sql>
+
+    <select id="selectByUserAndDate" resultMap="TimesheetEntryResult">
+        SELECT <include refid="BaseColumns"/>
+        FROM
+            timesheet_entries
+        WHERE
+            user_name = #{userName}
+            AND work_date = #{workDate}
+    </select>
+
+    <select id="selectByUserAndRange" resultMap="TimesheetEntryResult">
+        SELECT <include refid="BaseColumns"/>
+        FROM
+            timesheet_entries
+        WHERE
+            user_name = #{userName}
+            AND work_date BETWEEN #{from} AND #{to}
+        ORDER BY
+            work_date ASC
+    </select>
+
+    <insert id="insert" parameterType="com.example.demo.model.TimesheetEntry" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO
+            timesheet_entries( work_date, user_name, start_time, end_time, note, break_minutes, duration_minutes
+                             , working_minutes, version, holiday_work, work_location, irregular_work_type
+                             , irregular_work_desc, irregular_work_data, late_time, late_desc, early_time, early_desc
+                             , free_note, paid_leave)
+        VALUES
+            ( #{workDate}, #{userName}, #{startTime}, #{endTime}
+            , #{note, typeHandler=com.example.demo.mybatis.EncryptedStringTypeHandler}, #{breakMinutes}
+            , #{durationMinutes}
+            , #{workingMinutes}, #{version}, #{holidayWork}, #{workLocation}, #{irregularWorkType}
+            , #{irregularWorkDesc, typeHandler=com.example.demo.mybatis.EncryptedStringTypeHandler}
+            , #{irregularWorkData}, #{lateTime}
+            , #{lateDesc, typeHandler=com.example.demo.mybatis.EncryptedStringTypeHandler}, #{earlyTime}
+            , #{earlyDesc, typeHandler=com.example.demo.mybatis.EncryptedStringTypeHandler}
+            , #{freeNote, typeHandler=com.example.demo.mybatis.EncryptedStringTypeHandler}, #{paidLeave})
+    </insert>
+
+    <update id="updateTimes" parameterType="com.example.demo.model.TimesheetEntry">
+        UPDATE timesheet_entries
+        SET
+            <include refid="UpdateColumns"/>
+        WHERE
+            id = #{id}
+            AND version = #{version}
+    </update>
+
+    <update id="updateTimesForce" parameterType="com.example.demo.model.TimesheetEntry">
+        UPDATE timesheet_entries
+        SET
+            <include refid="UpdateColumns"/>
+        WHERE
+            id = #{id}
+    </update>
+
+    <update id="updateNote">
+        UPDATE timesheet_entries
+        SET
+            note         = #{note, typeHandler=com.example.demo.mybatis.EncryptedStringTypeHandler}
+            , updated_at = NOW()
+        WHERE
+            id = #{id}
+    </update>
+</mapper>

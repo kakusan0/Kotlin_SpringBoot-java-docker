@@ -1,0 +1,27 @@
+package com.example.demo.controller;
+
+import com.example.demo.dto.GeoIpStatus;
+import com.example.demo.service.GeoIpCountryService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@Validated
+@RequiredArgsConstructor
+public class GeoIpDebugController {
+
+    private final GeoIpCountryService geoIpCountryService;
+
+
+    @GetMapping("/api/geoip/status")
+    public GeoIpStatus status(@RequestParam(required = false) String ip) {
+        boolean enabled = geoIpCountryService.isEnabled();
+        String testIp = (ip != null && !ip.isBlank()) ? ip : "1.1.1.1";
+        String cc = enabled ? geoIpCountryService.lookupCountryCode(testIp) : null;
+        return new GeoIpStatus(enabled, testIp, cc);
+    }
+
+}

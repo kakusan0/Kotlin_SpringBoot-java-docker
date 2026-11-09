@@ -1,0 +1,9 @@
+{
+  "scripts": {
+    "obfuscate-minify": "node minify.js"
+  },
+  "devDependencies": {
+    "javascript-obfuscator": "latest",
+    "terser": "latest"
+  }
+}

@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="ja" xmlns:sec="http://www.thymeleaf.org/extras/spring-security" xmlns:th="http://www.thymeleaf.org">
+
+<head th:replace="~{fragments/head :: commonHead(${currentScreen ?: 'メインページ'})}">
+    <!-- Static fallback title to satisfy template validators; runtime fragment will replace head content -->
+    <title th:text="${currentScreen ?: 'メインページ'}">アプリケーション</title>
+</head>
+
+<body>
+
+<!-- 固定ヘッダー -->
+<header class="header">
+    <div class="d-flex align-items-center h-100 px-3 px-md-5 position-relative">
+        <div>
+            <button aria-controls="sidebarMenu" aria-label="メニューを開く" class="btn btn-primary d-md-none border-0"
+                    data-bs-target="#sidebarMenu" data-bs-toggle="offcanvas" type="button">
+                <i class="bi bi-list"></i>
+            </button>
+            <button aria-label="サイドバーを開閉" class="btn btn-primary d-none d-md-block border-0"
+                    id="pcSidebarToggle"
+                    type="button">
+                <i class="bi bi-list"></i>
+            </button>
+        </div>
+        <div class="position-absolute top-50 start-50 translate-middle d-flex align-items-center">
+            <h1 class="h5 mb-0 fw-bold text-dark" id="currentScreenTitle" th:text="${currentScreen ?: 'ホーム'}"></h1>
+        </div>
+        <!-- 右側：実働合計 + ログイン/ログアウトボタン -->
+        <div class="position-absolute top-50 end-0 translate-middle-y pe-3 d-flex align-items-center gap-3">
+            <!-- 実働合計: 勤務表表示時のみ表示 -->
+            <div class="d-flex align-items-center gap-1" id="headerTotalWorkingContainer"
+                 style="display: none !important;"
+                 th:style="${currentScreenPath != null and currentScreenPath == 'timesheetMonth'} ? 'display: flex !important;' : 'display: none !important;'">
+                <span class="badge bg-success fs-6" id="headerTotalWorkingDisplay">--</span>
+            </div>
+            <!-- ログイン済みの場合：ログアウトボタン -->
+            <form action="/logout" class="m-0" method="post" sec:authorize="isAuthenticated()" th:action="@{/logout}">
+                <input th:name="${_csrf.parameterName}" th:value="${_csrf.token}" type="hidden">
+                <button class="btn btn-outline-danger btn-sm" type="submit">
+                    <i class="bi bi-box-arrow-right"></i>
+                    <span class="d-none d-md-inline ms-1">ログアウト</span>
+                </button>
+            </form>
+            <!-- 未ログインの場合：ログインボタン -->
+            <button class="btn btn-primary btn-sm" data-bs-target="#loginModal" data-bs-toggle="modal"
+                    id="loginOpenBtn"
+                    sec:authorize="!isAuthenticated()" type="button">
+                <i class="bi bi-box-arrow-in-right"></i>
+                <span class="d-none d-md-inline ms-1">ログイン</span>
+            </button>
+        </div>
+    </div>
+</header>
+
+<!-- サイドバー（モバイルではオフキャンバス） -->
+<div aria-labelledby="sidebarMenuLabel" class="offcanvas offcanvas-start offcanvas-md" id="sidebarMenu"
+     tabindex="-1">
+    <div class="offcanvas-body p-0">
+        <ul class="nav flex-column">
+            <li class="nav-item">
+                <a class="nav-link text-dark"
+                   th:classappend="${#httpServletRequest != null and #strings.startsWith(#httpServletRequest.requestURI, '/tools')} ? ' active'"
+                   th:href="@{/tools}">
+                    <i class="bi bi-grid-3x3-gap"></i>
+                    <span>ツール</span>
+                </a>
+            </li>
+            <!-- 勤務表: UNISSロールのみ表示 -->
+            <li class="nav-item" sec:authorize="hasRole('UNISS')">
+                <a class="nav-link text-dark"
+                   th:classappend="${#httpServletRequest != null and #strings.startsWith(#httpServletRequest.requestURI, '/timesheet')} ? ' active'"
+                   th:href="@{/timesheet}">
+                    <i class="bi bi-calendar3"></i>
+                    <span>勤務表</span>
+                </a>
+            </li>
+            <!-- 管理: ADMINロールのみ表示 -->
+            <li class="nav-item" sec:authorize="hasRole('ADMIN')">
+                <a class="nav-link text-dark"
+                   th:classappend="${#httpServletRequest != null and #strings.startsWith(#httpServletRequest.requestURI, '/manage')} ? ' active'"
+                   th:href="@{/manage}">
+                    <i class="bi bi-tools"></i>
+                    <span>管理</span>
+                </a>
+            </li>
+        </ul>
+    </div>
+</div>
+
+<!-- メインコンテンツ（currentScreen に応じて切替） -->
+<main class="main-content p-4" th:classappend="${currentScreenPath == 'timesheetMonth'} ? 'p-0' : 'p-4'">
+    <div class="container-fluid" th:classappend="${currentScreenPath == 'timesheetMonth'} ? 'p-0' : ''">
+        <div class="mb-3" th:if="${errorMessage != null and errorMessage != ''}">
+            <div class="alert alert-danger" th:text="${errorMessage}"></div>
+        </div>
+        <div th:if="${currentScreenPath != null and currentScreenPath != ''}">
+            <div th:replace="~{${'fragments/' + currentScreenPath} :: content}"></div>
+        </div>
+        <!-- フォールバック表示: エラーが無く、かつコンテンツが指定されていないときだけ表示 -->
+        <div th:if="${(errorMessage == null or errorMessage == '') and (currentScreenPath == null or currentScreenPath == '')}">
+            <div class="text-center mt-5">
+                <h2>ようこそ</h2>
+                <p class="text-muted">ツールを利用するにはサイドバーの「ツール」を選択してください。</p>
+            </div>
+        </div>
+    </div>
+</main>
+
+<!-- モーダル -->
+<div th:replace="~{fragments/modals/errorModal :: content}"></div>
+
+<!-- グローバルローディングスピナー -->
+<div aria-hidden="true" class="modal fade" data-bs-backdrop="static" data-bs-keyboard="false" id="globalLoadingModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-sm">
+        <div class="modal-content text-center py-4">
+            <div class="modal-body">
+                <div class="spinner-border text-primary mb-3" role="status" style="width: 3rem; height: 3rem;">
+                    <span class="visually-hidden">読み込み中...</span>
+                </div>
+                <p class="mb-0 text-muted" id="globalLoadingMessage">読み込み中...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ログインモーダル -->
+<div aria-hidden="true" aria-labelledby="loginModalLabel" class="modal fade" id="loginModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="loginModalLabel">
+                    <i class="bi bi-box-arrow-in-right me-2"></i>ログイン
+                </h5>
+                <button aria-label="閉じる" class="btn-close" data-bs-dismiss="modal" type="button"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-danger d-none" id="loginErrorAlert"></div>
+                <form action="/login" id="loginModalForm" method="post" th:action="@{/login}">
+                    <input th:name="${_csrf.parameterName}" th:value="${_csrf.token}" type="hidden">
+                    <div class="form-floating mb-3">
+                        <input autocomplete="username" class="form-control" id="modalUsername" name="username"
+                               placeholder="ユーザー名" required type="text">
+                        <label for="modalUsername">ユーザー名</label>
+                    </div>
+                    <div class="form-floating mb-3 position-relative">
+                        <input autocomplete="current-password" class="form-control" id="modalPassword" name="password"
+                               placeholder="パスワード" required type="password">
+                        <label for="modalPassword">パスワード</label>
+                        <button class="btn btn-link position-absolute end-0 top-50 translate-middle-y text-muted"
+                                id="modalTogglePassword" style="z-index: 10;" type="button">
+                            <i class="bi bi-eye" id="modalToggleIcon"></i>
+                        </button>
+                    </div>
+                    <div class="d-grid">
+                        <button class="btn btn-primary" id="loginSubmitBtn" type="submit">
+                            <i class="bi bi-box-arrow-in-right me-1"></i>ログイン
+                        </button>
+                    </div>
+                </form>
+                <!-- パスキーでログイン -->
+                <div class="text-center mt-3">
+                    <hr class="my-3">
+                    <small class="text-muted">または</small>
+                </div>
+                <div class="d-grid mt-2">
+                    <button class="btn btn-outline-success" id="modalPasskeyLoginBtn" type="button">
+                        <i class="bi bi-fingerprint me-1"></i>パスキーでログイン
+                    </button>
+                </div>
+                <div class="mt-2 small text-muted text-center" id="modalPasskeyStatus"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script th:inline="javascript">
+    /*<![CDATA[*/
+    document.addEventListener('DOMContentLoaded', function () {
+        const loginModal = document.getElementById('loginModal');
+        if (!loginModal) return;
+
+        const form = document.getElementById('loginModalForm');
+        const usernameInput = document.getElementById('modalUsername');
+        const passwordInput = document.getElementById('modalPassword');
+        const toggleBtn = document.getElementById('modalTogglePassword');
+        const toggleIcon = document.getElementById('modalToggleIcon');
+        const errorAlert = document.getElementById('loginErrorAlert');
+        const submitBtn = document.getElementById('loginSubmitBtn');
+        const openBtn = document.getElementById('loginOpenBtn');
+        const message = /*[[${loginMessage}]]*/ null;
+        const errorMsg = /*[[${loginError}]]*/ null;
+        const presetUsername = /*[[${loginUsername}]]*/ null;
+        const shouldShowModal = /*[[${showLoginModal}]]*/ false;
+        const currentUserName = /*[[${currentUserName}]]*/ null;
+        window.currentUserName = currentUserName;
+
+        if (presetUsername) {
+            usernameInput.value = presetUsername;
+        }
+        if (errorMsg) {
+            errorAlert.textContent = errorMsg;
+            errorAlert.classList.remove('d-none');
+        }
+        if (shouldShowModal) {
+            const modal = bootstrap.Modal.getOrCreateInstance(loginModal);
+            modal.show();
+            if (message) {
+                // 成功メッセージはアラート枠を流用
+                errorAlert.classList.remove('d-none', 'alert-danger');
+                errorAlert.classList.add('alert-success');
+                errorAlert.textContent = message;
+            }
+        }
+
+        // 明示的クリックでも確実にモーダルを開く（data属性のフォールバック）
+        if (openBtn) {
+            openBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                bootstrap.Modal.getOrCreateInstance(loginModal).show();
+            });
+        }
+
+        // モーダル表示時にユーザー名にフォーカス
+        loginModal.addEventListener('shown.bs.modal', () => {
+            usernameInput.focus();
+        });
+
+        // モーダルを閉じた時にフォームをリセット
+        loginModal.addEventListener('hidden.bs.modal', () => {
+            form.reset();
+            errorAlert.classList.add('d-none');
+            errorAlert.textContent = '';
+            passwordInput.type = 'password';
+            toggleIcon.classList.remove('bi-eye-slash');
+            toggleIcon.classList.add('bi-eye');
+        });
+
+        // パスワード表示切替
+        if (toggleBtn) {
+            toggleBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const type = passwordInput.type === 'password' ? 'text' : 'password';
+                passwordInput.type = type;
+                toggleIcon.classList.toggle('bi-eye');
+                toggleIcon.classList.toggle('bi-eye-slash');
+            });
+        }
+
+        // Ajaxでログイン処理
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const username = usernameInput.value.trim();
+            const password = passwordInput.value.trim();
+
+            if (!username || !password) {
+                errorAlert.textContent = 'ユーザー名とパスワードを入力してください。';
+                errorAlert.classList.remove('d-none');
+                return;
+            }
+
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>ログイン中...';
+            errorAlert.classList.add('d-none');
+
+            try {
+                const formData = new FormData(form);
+                const response = await fetch(form.action, {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'same-origin',
+                    redirect: 'follow'
+                });
+
+                if (response.ok || response.redirected) {
+                    // ログイン成功 - ツールページにリダイレクト
+                    window.location.href = '/tools';
+                } else {
+                    const text = await response.text();
+                    if (text.includes('error') || response.status === 401) {
+                        errorAlert.textContent = 'ユーザー名またはパスワードが正しくありません。';
+                    } else {
+                        errorAlert.textContent = 'ログインに失敗しました。';
+                    }
+                    errorAlert.classList.remove('d-none');
+                }
+            } catch (err) {
+                errorAlert.textContent = 'ネットワークエラーが発生しました。';
+                errorAlert.classList.remove('d-none');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = '<i class="bi bi-box-arrow-in-right me-1"></i>ログイン';
+            }
+        });
+
+        // Enterキーでログイン
+        passwordInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                form.dispatchEvent(new Event('submit'));
+            }
+        });
+
+        // パスキーログイン処理（ユーザー名なし対応）
+        const passkeyLoginBtn = document.getElementById('modalPasskeyLoginBtn');
+        const passkeyStatus = document.getElementById('modalPasskeyStatus');
+
+        const b64uToArray = (b64) => Uint8Array.from(atob(b64.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
+        const arrayToB64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+
+        // パスキーログイン処理の関数
+        async function handlePasskeyLogin() {
+            const username = usernameInput.value.trim();
+            try {
+                if (passkeyLoginBtn) passkeyLoginBtn.disabled = true;
+                if (passkeyStatus) {
+                    passkeyStatus.textContent = 'チャレンジ取得中...';
+                    passkeyStatus.classList.remove('text-danger');
+                }
+
+                // ユーザー名があれば従来の認証、なければDiscoverable認証
+                const optionsUrl = username
+                    ? `/api/webauthn/authentication/options?username=${encodeURIComponent(username)}`
+                    : '/api/webauthn/authentication/options';
+
+                const res = await fetch(optionsUrl);
+                if (!res.ok) {
+                    const msg = (await res.json().catch(() => ({}))).message || 'パスキーが登録されていません';
+                    throw new Error(msg);
+                }
+                const options = await res.json();
+                const challengeId = options.challengeId; // Discoverable認証用
+
+                const publicKeyOptions = {
+                    challenge: b64uToArray(options.challenge).buffer,
+                    rpId: options.rpId,
+                    timeout: options.timeout,
+                    userVerification: options.userVerification
+                };
+
+                // allowCredentialsがある場合のみ設定
+                if (options.allowCredentials && options.allowCredentials.length > 0) {
+                    publicKeyOptions.allowCredentials = options.allowCredentials.map(ac => ({
+                        ...ac,
+                        id: b64uToArray(ac.id).buffer
+                    }));
+                }
+
+                if (passkeyStatus) passkeyStatus.textContent = '認証中...';
+
+                const assertion = await navigator.credentials.get({ publicKey: publicKeyOptions });
+                if (!assertion) throw new Error('認証がキャンセルされました');
+
+                // 認証完了エンドポイント
+                const finishUrl = challengeId
+                    ? `/api/webauthn/authentication/finish/discoverable?challengeId=${encodeURIComponent(challengeId)}`
+                    : `/api/webauthn/authentication/finish?username=${encodeURIComponent(username)}`;
+
+                const finishRes = await fetch(finishUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id: assertion.id,
+                        rawId: arrayToB64u(assertion.rawId),
+                        type: assertion.type,
+                        response: {
+                            authenticatorData: arrayToB64u(assertion.response.authenticatorData),
+                            clientDataJSON: arrayToB64u(assertion.response.clientDataJSON),
+                            signature: arrayToB64u(assertion.response.signature),
+                            userHandle: assertion.response.userHandle ? arrayToB64u(assertion.response.userHandle) : null
+                        }
+                    })
+                });
+
+                if (!finishRes.ok) {
+                    const msg = (await finishRes.json().catch(() => ({}))).message || '認証に失敗しました';
+                    throw new Error(msg);
+                }
+                const result = await finishRes.json();
+                if (passkeyStatus) passkeyStatus.textContent = `ログイン成功${result.username ? ` (${result.username})` : ''}！リダイレクトします...`;
+                setTimeout(() => window.location.href = '/tools', 300);
+            } catch (e) {
+                console.error(e);
+                if (passkeyStatus) {
+                    const msgText = String(e?.message || '').toLowerCase();
+                    const isCanceled = e?.name === 'NotAllowedError'
+                        || msgText.includes('cancel')
+                        || msgText.includes('not allowed')
+                        || msgText.includes('timed out');
+                    const msg = isCanceled ? 'キャンセルされました' : `エラー: ${e.message}`;
+                    passkeyStatus.textContent = msg;
+                    passkeyStatus.classList.add('text-danger');
+                }
+            } finally {
+                if (passkeyLoginBtn) passkeyLoginBtn.disabled = false;
+            }
+        }
+
+        // 直接イベントリスナーを登録
+        if (passkeyLoginBtn) {
+            passkeyLoginBtn.addEventListener('click', handlePasskeyLogin);
+        }
+
+        // イベントデリゲーションでも登録（フォールバック）
+        loginModal.addEventListener('click', (e) => {
+            if (e.target.id === 'modalPasskeyLoginBtn' || e.target.closest('#modalPasskeyLoginBtn')) {
+                e.preventDefault();
+                handlePasskeyLogin();
+            }
+        });
+    });
+    /*]]>*/
+</script>
+
+
+
+
+
+
+
+
+
+
+
+
+

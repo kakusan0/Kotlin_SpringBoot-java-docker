@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Tasks for compatible dependency, frontend, and Docker Compose optimization.",
+  "tasks": [
+    {
+      "type": "upgrade",
+      "id": "001-upgrade-java-ecosystem",
+      "description": "Update compatible Spring, Maven, and Java dependency versions",
+      "reason": "The project is already on Java 25 and Spring Boot 4; identify only verified newer stable releases that remain compatible.",
+      "requirements": "Review the Maven dependency and plugin versions, including Spring Boot, Spring Cloud, explicitly versioned libraries, and the Maven Wrapper. Check for newer stable supported releases at execution time and update only where compatibility is established and build/test validation passes. Keep Java 25 and the existing Spring Boot 4 baseline unless a newer compatible stable release is verified; do not repeat the completed Java upgrade, make speculative breaking-major changes, or expand into unrelated application changes. Record versions retained because they are current or lack a safe compatible upgrade.",
+      "dependencies": [],
+      "successCriteria": {
+        "passBuild": "true",
+        "generateNewUnitTests": "false",
+        "passUnitTests": "true"
+      }
+    },
+    {
+      "type": "upgrade",
+      "id": "002-upgrade-frontend-toolchain",
+      "description": "Make frontend dependency and asset builds reproducible",
+      "reason": "The frontend package manifest uses floating latest dependency specifications and its generated JavaScript assets are required at runtime.",
+      "requirements": "Review the frontend Node.js/npm toolchain and JavaScript build dependencies. Replace floating dependency specifications with explicit stable compatible versions, update and verify the npm lockfile, and run the existing minification/obfuscation build. Regenerate the ignored src/main/resources/static/js assets and verify they are included in the application package and rebuilt container. Keep Node/npm versions only when they remain supported and compatible; avoid unrelated frontend changes.",
+      "dependencies": [
+        "001-upgrade-java-ecosystem"
+      ],
+      "successCriteria": {
+        "passBuild": "true",
+        "generateNewUnitTests": "false",
+        "passUnitTests": "true"
+      }
+    },
+    {
+      "type": "security",
+      "id": "003-validate-changed-dependencies",
+      "description": "Check changed dependency and image versions for relevant CVEs",
+      "reason": "Validate only the versions changed by this modernization before rebuilding and deploying the application.",
+      "requirements": "Check only the Maven/npm dependencies and container image versions actually changed by tasks 001, 002, or 004 for relevant known CVEs. Remediate only with a compatible, testable version; document any issue that cannot be safely resolved. Do not perform a broad repository security audit or scan unrelated code and components.",
+      "dependencies": [
+        "002-upgrade-frontend-toolchain"
+      ],
+      "successCriteria": {
+        "passBuild": "true",
+        "generateNewUnitTests": "false",
+        "passUnitTests": "true"
+      }
+    },
+    {
+      "type": "containerization",
+      "id": "004-optimize-compose-runtime",
+      "description": "Optimize and verify the existing Docker Compose runtime",
+      "reason": "The current Compose file uses floating database/cache/Vault image tags and the application is deployed locally through Docker Desktop.",
+      "requirements": "Review Dockerfile build/runtime efficiency and Docker Compose configuration. Replace floating image tags only with verified stable versions compatible with the currently running services. Before changing PostgreSQL or Redis versions, inspect the active versions, volume identity and data paths, and establish a tested backup/restore and migration procedure; retain the current images and explicitly defer an unsafe update rather than risking data. Preserve existing volumes and services, do not use destructive down/volume-delete/prune operations, and only update Vault or other services when compatibility is verified. Ensure the application build contains regenerated frontend assets. Run the build and tests, then rebuild and verify the affected app service in Docker Desktop by checking startup, health, logs, and application behavior without destroying existing data.",
+      "dependencies": [
+        "003-validate-changed-dependencies"
+      ],
+      "dockerfilePath": "Dockerfile (existing); docker-compose.yml (existing)"
+    }
+  ],
+  "metadata": {
+    "planName": "version-optimization-20261109",
+    "projectName": "Kotlin_SpringBoot-java-docker",
+    "language": "java",
+    "createdAt": "2026-11-09T11:11:56+09:00",
+    "version": "1.0"
+  }
+}

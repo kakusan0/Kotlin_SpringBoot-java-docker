@@ -1,0 +1,57 @@
+spring:
+  cloud:
+    vault:
+      enabled: true
+  datasource:
+    url: ${db.url:${SPRING_DATASOURCE_URL:jdbc:postgresql://db:5432/demo_db}}
+    username: ${db.username:${SPRING_DATASOURCE_USERNAME:demo_user}}
+    password: ${db.password:${SPRING_DATASOURCE_PASSWORD:demo_pass}}
+    hikari:
+      maximum-pool-size: 20
+  flyway:
+    clean-disabled: true
+  data:
+    redis:
+      host: ${redis.host:${REDIS_HOST:redis}}
+      password: ${redis.password:}
+      jedis:
+        pool:
+          max-active: 20
+  session:
+    redis:
+      namespace: app:sessions
+  servlet:
+    session:
+      cookie:
+        secure: true
+
+server:
+  forward-headers-strategy: framework
+  servlet:
+    session:
+      cookie:
+        secure: true
+        same-site: strict
+
+logging:
+  level:
+    root: WARN
+    com.example.demo: INFO
+
+geoip:
+  mmdb-path: /opt/geoip/GeoLite2-Country.mmdb
+  allowed-country-codes: JP
+
+app:
+  trust-proxy: true
+  login:
+    rate-limit:
+      capacity: 5
+      refill-minutes: 5
+
+webauthn:
+  rp:
+    id: ${WEBAUTHN_RP_ID:infoapp.org}
+    name: ${WEBAUTHN_RP_NAME:Production RP}
+    origin: ${WEBAUTHN_RP_ORIGIN:https://infoapp.org}
+    allowed-origins: ${WEBAUTHN_ALLOWED_ORIGINS:https://infoapp.org}

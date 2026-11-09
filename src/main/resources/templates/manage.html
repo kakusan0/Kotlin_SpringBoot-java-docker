@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="ja" xmlns:th="http://www.thymeleaf.org">
+
+<head th:replace="~{fragments/head :: commonHead('管理画面')}">
+    <title>管理画面</title>
+</head>
+
+<body>
+<!-- 固定ヘッダー（簡易コピー） -->
+<header class="header">
+    <div class="d-flex align-items-center h-100 px-3 px-md-5 position-relative">
+        <div>
+            <button aria-controls="sidebarMenu" aria-label="メニューを開く" class="btn btn-primary d-md-none border-0"
+                    data-bs-target="#sidebarMenu" data-bs-toggle="offcanvas" type="button">
+                <i class="bi bi-list"></i>
+            </button>
+            <button aria-label="サイドバーを開閉" class="btn btn-primary d-none d-md-block border-0"
+                    id="pcSidebarToggle"
+                    type="button">
+                <i class="bi bi-list"></i>
+            </button>
+        </div>
+        <div class="position-absolute top-50 start-50 translate-middle d-flex align-items-center">
+            <strong>管理</strong>
+        </div>
+        <div class="position-absolute top-50 end-0 translate-middle-y pe-3">
+            <form action="/logout" class="m-0" method="post" th:action="@{/logout}">
+                <input th:name="${_csrf.parameterName}" th:value="${_csrf.token}" type="hidden">
+                <button class="btn btn-outline-danger btn-sm" type="submit">
+                    <i class="bi bi-box-arrow-right"></i>
+                    <span class="d-none d-md-inline ms-1">ログアウト</span>
+                </button>
+            </form>
+        </div>
+    </div>
+</header>
+
+<!-- サイドバー（共通フラグメント） -->
+<div th:replace="~{fragments/sidebar :: adminSidebar}"></div>
+
+<main class="main-content p-4">
+    <div class="container-fluid">
+        <h2>管理画面</h2>
+        <div class="alert alert-info">
+            <p>メニュー管理・画面管理・パス管理は削除されました。</p>
+            <p>以下の機能をご利用ください：</p>
+            <ul>
+                <li><a href="/manage/ip">IP管理</a></li>
+                <li><a href="/manage/ua">User-Agent管理</a></li>
+            </ul>
+        </div>
+    </div>
+</main>
+
+</body>
+
+</html>
+

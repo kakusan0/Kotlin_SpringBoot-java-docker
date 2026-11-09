@@ -1,0 +1,77 @@
+# 開発環境用 Docker Compose
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: demo-app
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: "prod"
+
+      # Vault（コンテナ間通信はサービス名で）
+      VAULT_URI: "http://vault:8200"
+      VAULT_TOKEN: "root-token"
+      VAULT_ENABLED: "true"
+
+      # Redis（コンテナ間通信はサービス名で）
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      vault:
+        condition: service_started
+
+  db:
+    image: postgres:latest
+    container_name: demo-db-dev
+    environment:
+      POSTGRES_USER: demo_user
+      POSTGRES_PASSWORD: demo_pass
+      POSTGRES_DB: demo_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data1
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U demo_user -d demo_db" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:latest
+    container_name: demo-redis-dev
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD-SHELL", "redis-cli ping || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  vault:
+    image: hashicorp/vault:latest
+    container_name: vault
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: "root-token"
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+      VAULT_SKIP_VERIFY: true
+      VAULT_ADDR: "http://127.0.0.1:8200"
+      VAULT_TOKEN: "root-token"
+    command: "server -dev"
+    cap_add:
+      - IPC_LOCK
+
+volumes:
+  db_data:
+  redis_data:

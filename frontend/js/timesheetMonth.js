@@ -1,0 +1,3658 @@
+(function () {
+    // DOM要素のキャッシュ（存在チェック付き）
+    const elements = {
+        defaultStart: document.getElementById('defaultStart'),
+        defaultEnd: document.getElementById('defaultEnd'),
+        defaultBreak: document.getElementById('defaultBreak'),
+        companyAffiliation: document.getElementById('companyAffiliation'),
+        branchOffice: document.getElementById('branchOffice'),
+        section: document.getElementById('section'),
+        workGroup: document.getElementById('workGroup'),
+        employeeNumber: document.getElementById('employeeNumber'),
+        siteRegularHours: document.getElementById('siteRegularHours'),
+        displayName: document.getElementById('displayName'),
+        saveUserSettingsBtn: document.getElementById('saveUserSettings'),
+        userSettingsStatus: document.getElementById('userSettingsStatus'),
+        applyDefaultsBtn: document.getElementById('applyDefaults'),
+        picker: document.getElementById('timePicker'),
+        display: document.getElementById('timeDisplay'),
+        hand: document.getElementById('hand'),
+        modeLabel: document.getElementById('modeLabel'),
+        dragArea: document.getElementById('dragArea'),
+        clock: document.getElementById('clock'),
+        selectedDateLabel: document.getElementById('selectedDateLabel'),
+        cellTypeLabel: document.getElementById('cellTypeLabel'),
+        holidayLabel: document.getElementById('holidayLabel'),
+        monthInput: document.getElementById('monthInput'),
+        prevBtn: document.getElementById('prevMonth'),
+        nextBtn: document.getElementById('nextMonth'),
+        workTable: document.getElementById('workTable'),
+        tableBody: document.getElementById('tableBody'),
+        // スマホ用モーダル要素
+        mobilePickerModal: document.getElementById('timePickerModal'),
+        mobileDisplay: document.getElementById('mobileTimeDisplay'),
+        mobileHand: document.getElementById('mobileHand'),
+        mobileModeLabel: document.getElementById('mobileModeLabel'),
+        mobileDragArea: document.getElementById('mobileDragArea'),
+        mobileClock: document.getElementById('mobileClock'),
+        mobileSelectedDateLabel: document.getElementById('mobileSelectedDateLabel'),
+        mobileCellTypeLabel: document.getElementById('mobileCellTypeLabel')
+    };
+
+    // 後方互換性のために個別変数も定義
+    const {
+        defaultStart, defaultEnd, defaultBreak, applyDefaultsBtn, picker, display, hand,
+        modeLabel, dragArea, clock, selectedDateLabel, cellTypeLabel, holidayLabel,
+        monthInput, prevBtn, nextBtn, companyAffiliation, branchOffice, section, workGroup,
+        employeeNumber, siteRegularHours, displayName, saveUserSettingsBtn, userSettingsStatus
+    } = elements;
+
+    // 動的にオーバーレイを用意
+    const OVERLAY_ID = 'timePickerOverlay';
+    let overlay = document.getElementById(OVERLAY_ID);
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = OVERLAY_ID;
+        Object.assign(overlay.style, {
+            display: 'none',
+            position: 'fixed',
+            inset: '0',
+            background: 'rgba(0,0,0,0.25)',
+            zIndex: '9998'
+        });
+        document.body.appendChild(overlay);
+    }
+
+    let currentCell = null;
+    let selectingHour = true;
+    let hour = 0;
+    let minute = 0;
+    let dragStarted = false;
+    let dragStartTime = 0;
+
+    let suppressAutoSaveAll = 0;
+
+    function suspendAutoSave() {
+        suppressAutoSaveAll++;
+    }
+
+    function resumeAutoSave() {
+        suppressAutoSaveAll = Math.max(0, suppressAutoSaveAll - 1);
+    }
+
+    // グローバルローディングスピナー制御（timesheet専用の簡易インライン表示）
+    let loadingCounter = 0;
+
+    function showLoading(key = 'timesheet', message = '読み込み中...') {
+        if (key !== 'timesheet') return; // 現状は勤務表の読み込みのみ個別表示
+        loadingCounter++;
+        const container = document.getElementById('headerTotalWorkingContainer');
+        if (!container) return;
+        const spinnerId = 'timesheetInlineSpinner';
+        let spinner = document.getElementById(spinnerId);
+        if (!spinner) {
+            spinner = document.createElement('span');
+            spinner.id = spinnerId;
+            spinner.className = 'spinner-border spinner-border-sm text-primary';
+            spinner.role = 'status';
+            spinner.style.marginLeft = '4px';
+            const sr = document.createElement('span');
+            sr.className = 'visually-hidden';
+            sr.textContent = message;
+            spinner.appendChild(sr);
+            container.appendChild(spinner);
+        }
+        const msgEl = document.getElementById('globalLoadingMessage'); // 未使用でもメッセージ更新
+        if (msgEl) msgEl.textContent = message;
+        spinner.style.display = 'inline-block';
+        const totalDisplay = document.getElementById('headerTotalWorkingDisplay');
+        if (totalDisplay) totalDisplay.style.visibility = 'hidden';
+        container.style.display = '';
+    }
+
+    function hideLoading(key = 'timesheet') {
+        if (key !== 'timesheet') return;
+        loadingCounter = Math.max(0, loadingCounter - 1);
+        if (loadingCounter !== 0) return;
+        const spinner = document.getElementById('timesheetInlineSpinner');
+        if (spinner) spinner.style.display = 'none';
+        const totalDisplay = document.getElementById('headerTotalWorkingDisplay');
+        if (totalDisplay) totalDisplay.style.visibility = '';
+    }
+
+    // 正規表現パターンを定数化（再利用のため）
+    const TIME_PATTERNS = {
+        HH_MM: /^\d\d:\d\d$/,
+        HH_MM_SS: /^\d\d:\d\d:\d\d$/,
+        HH_MM_00: /^\d\d:\d\d:00$/,
+        FULL: /^(\d\d):(\d\d)(?::(\d\d))?$/
+    };
+
+    const NOTE_RULES = {
+        HOLIDAY_NOTES: ['休日', '祝日', '年休', '会社休', '対象外', '振替休日', '特別休暇', '欠勤'],
+        CLEAR_NOTES: ['休日', '祝日', '会社休', '対象外'],
+        WORKING_NOTES: ['午前休', '午後休', '現場休', '休日出勤', '振替出勤'],
+        LOCATION_ENABLED_NOTES: ['午前休', '午後休', '現場休'],
+        WORKING_IRREGULARS: ['振替出勤', '休日出勤']
+    };
+
+    const isHolidayNote = (note) => NOTE_RULES.HOLIDAY_NOTES.includes(note);
+    const isClearNote = (note) => NOTE_RULES.CLEAR_NOTES.includes(note);
+    const isWorkingNote = (note) => NOTE_RULES.WORKING_NOTES.includes(note);
+    const isWorkingIrregularType = (type) => NOTE_RULES.WORKING_IRREGULARS.includes(type);
+
+    // タッチ端末判定
+    const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints && navigator.maxTouchPoints > 0);
+
+    // 秒付き(常に00)へ正規化するヘルパ
+    function ensureSeconds(t) {
+        if (!t) return t;
+        if (TIME_PATTERNS.HH_MM.test(t)) return t + ':00';
+        if (TIME_PATTERNS.HH_MM_00.test(t)) return t;
+        return t;
+    }
+
+    // タッチ端末向け: ネイティブ time input を表示して結果をセルへ反映
+    function showNativeTimePicker(cell, type) {
+        const row = cell.parentElement;
+        if (row) row.dataset.localEditing = '1';
+
+        const rect = cell.getBoundingClientRect();
+        let init = cell.textContent.trim();
+        if (TIME_PATTERNS.HH_MM_SS.test(init)) init = init.substring(0, 5);
+
+        const def = (type === 'start' ? defaultStart.value : defaultEnd.value) || '09:00';
+        const inputVal = TIME_PATTERNS.HH_MM.test(init) ? init : (TIME_PATTERNS.HH_MM.test(def) ? def : '09:00');
+
+        const input = document.createElement('input');
+        Object.assign(input, {
+            type: 'time',
+            step: '60',
+            value: inputVal,
+            className: 'native-time-input'
+        });
+
+        Object.assign(input.style, {
+            position: 'absolute',
+            zIndex: '9999',
+            left: Math.max(8, rect.left) + 'px',
+            top: Math.min(window.innerHeight - 56, rect.bottom + 6) + 'px'
+        });
+
+        document.body.appendChild(input);
+        input.focus();
+
+        if (typeof input.showPicker === 'function') {
+            try {
+                input.showPicker();
+            } catch (err) { /* ignore */
+            }
+        }
+
+        function applyAndRemove() {
+            const v = input.value;
+            if (v && TIME_PATTERNS.HH_MM.test(v)) {
+                cell.textContent = ensureSeconds(v);
+                updateRowMetrics(row);
+                autoSaveRow(row);
+            }
+            if (row && row.dataset.localEditing) delete row.dataset.localEditing;
+            input.remove();
+        }
+
+        input.addEventListener('change', applyAndRemove);
+        input.addEventListener('blur', () => setTimeout(() => {
+            if (document.body.contains(input)) applyAndRemove();
+        }, 150));
+    }
+
+    // DBから祝日を取得（失敗時は外部APIにフォールバック）
+    async function fetchHolidays(year) {
+        const numericYear = Number(year);
+        if (!Number.isFinite(numericYear) || numericYear <= 0) {
+            console.warn('祝日取得スキップ: 無効な年', year);
+            return {};
+        }
+        try {
+            const extRes = await fetch(`https://date.nager.at/api/v3/PublicHolidays/${numericYear}/JP`);
+            if (!extRes.ok) {
+                console.warn('祝日取得失敗 (外部API):', extRes.status);
+                return {};
+            }
+            const data = await extRes.json();
+            const map = {};
+            for (const h of data) {
+                map[h.date] = h.localName || h.name || '';
+            }
+            return map;
+        } catch (err) {
+            console.warn('祝日取得失敗 (外部API):', err);
+            return {};
+        }
+    }
+
+    // Update the populateHolidayInfo function to filter holidays for the selected month
+    function populateHolidayInfo(holidayMap, selectedMonth) {
+        const holidayInfoDiv = document.getElementById('holidayInfo');
+        if (!holidayInfoDiv) return;
+
+        holidayInfoDiv.innerHTML = ''; // Clear existing content
+        const fragment = document.createDocumentFragment();
+
+        Object.keys(holidayMap).forEach(date => {
+            const holidayDate = new Date(date);
+            if (holidayDate.getMonth() + 1 === selectedMonth) {
+                const holidayEntry = document.createElement('div');
+                holidayEntry.textContent = `${date}: 祝: ${holidayMap[date]}`;
+                fragment.appendChild(holidayEntry);
+            }
+        });
+
+        holidayInfoDiv.appendChild(fragment);
+    }
+
+    // 稼働(開始-終了)と実働(休憩差引)を同時に計算して返す。
+    function computeDuration(start, end, breakMinutes = 0) {
+        if (!start || !end) return {durationMinutes: null, workingMinutes: null};
+
+        const mStart = TIME_PATTERNS.FULL.exec(start);
+        const mEnd = TIME_PATTERNS.FULL.exec(end);
+        if (!mStart || !mEnd) return {durationMinutes: null, workingMinutes: null};
+
+        const sh = Number(mStart[1]);
+        const sm = Number(mStart[2]);
+        const ss = mStart[3] ? Number(mStart[3]) : 0;
+        const eh = Number(mEnd[1]);
+        const em = Number(mEnd[2]);
+        const es = mEnd[3] ? Number(mEnd[3]) : 0;
+
+        // 秒は常に00固定運用
+        if (ss !== 0 || es !== 0 || [sh, sm, eh, em].some(v => isNaN(v))) {
+            return {durationMinutes: null, workingMinutes: null};
+        }
+
+        let diff = (eh * 60 + em) - (sh * 60 + sm);
+        if (diff < 0) diff += 24 * 60; // 翌日跨ぎ
+
+        const durationMinutes = diff >= 0 ? diff : null;
+        const bVal = parseInt(breakMinutes, 10);
+        const breakVal = isNaN(bVal) ? 0 : Math.max(bVal, 0);
+        const workingMinutes = durationMinutes != null ? Math.max(durationMinutes - breakVal, 0) : null;
+
+        return {durationMinutes, workingMinutes};
+    }
+
+    function fmtHM(m) {
+        if (m == null || m === '') return '';
+        const v = parseInt(m, 10);
+        if (isNaN(v)) return '';
+        const h = Math.floor(v / 60);
+        const mm = v % 60;
+        return `${h}時間${mm}分`;
+    }
+
+    function updateRowMetrics(row) {
+        const startCell = row.querySelector('.time-cell[data-type="start"]');
+        const endCell = row.querySelector('.time-cell[data-type="end"]');
+        const breakCell = row.querySelector('.break-cell');
+        const durationCell = row.querySelector('.duration-cell');
+        const workingCell = row.querySelector('.working-cell');
+
+        if (!startCell || !endCell || !breakCell || !durationCell || !workingCell) return;
+
+        const start = startCell.textContent.trim();
+        const end = endCell.textContent.trim();
+        const breakValRaw = breakCell.textContent.trim();
+        const breakVal = parseInt(breakValRaw || '0', 10) || 0;
+        const metrics = computeDuration(start, end, breakVal);
+
+        durationCell.textContent = metrics.durationMinutes != null ? fmtHM(metrics.durationMinutes) : '';
+        workingCell.textContent = metrics.workingMinutes != null ? fmtHM(metrics.workingMinutes) : '';
+
+        // 警告チェックを実行
+        checkRowWarnings(row);
+    }
+
+    /**
+     * 行の警告状態をチェックして表示する
+     * - 勤務時間が空欄で備考も空欄の場合は備考を点滅
+     * - 出勤・退勤・休憩のいずれかが入力されていて、いずれかが未入力の場合は枠線を色付け
+     */
+    function checkRowWarnings(row) {
+        const startCell = row.querySelector('.time-cell[data-type="start"]');
+        const endCell = row.querySelector('.time-cell[data-type="end"]');
+        const breakCell = row.querySelector('.break-cell');
+        const noteCell = row.querySelector('.note-cell');
+        const noteSelect = row.querySelector('.note-select');
+
+        if (!startCell || !endCell || !breakCell) return;
+
+        const start = startCell.textContent.trim();
+        const end = endCell.textContent.trim();
+        const breakVal = breakCell.textContent.trim();
+        const note = noteSelect?.value || '';
+
+        // 土日祝の場合は警告をスキップ（休日系の備考がある場合も）
+        const iso = row.querySelector('.date-cell')?.dataset?.iso;
+        const isWeekend = iso ? isWeekendIso(iso) : false;
+        const isHoliday = row.dataset.isHoliday === '1';
+        const holidayNote = isHolidayNote(note);
+
+        // 休日系の場合は警告を解除
+        if (isWeekend || isHoliday || holidayNote) {
+            noteCell?.classList.remove('blink-warning');
+            startCell.classList.remove('incomplete-warning');
+            endCell.classList.remove('incomplete-warning');
+            breakCell.classList.remove('incomplete-warning');
+            row.classList.remove('row-incomplete');
+            return;
+        }
+
+        // 1. 勤務時間が空欄で備考も空欄の場合は備考を点滅
+        const hasNoTime = !start && !end && !breakVal;
+        const hasNoNote = !note;
+
+        if (hasNoTime && hasNoNote) {
+            noteCell?.classList.add('blink-warning');
+        } else {
+            noteCell?.classList.remove('blink-warning');
+        }
+
+        // 2. 出勤・退勤・休憩のいずれかが入力されていて、いずれかが未入力の場合
+        const hasAnyTime = start || end || breakVal;
+        const hasAllTime = start && end && breakVal;
+
+        if (hasAnyTime && !hasAllTime) {
+            // 未入力のセルに警告枠線
+            if (!start) startCell.classList.add('incomplete-warning');
+            else startCell.classList.remove('incomplete-warning');
+
+            if (!end) endCell.classList.add('incomplete-warning');
+            else endCell.classList.remove('incomplete-warning');
+
+            if (!breakVal) breakCell.classList.add('incomplete-warning');
+            else breakCell.classList.remove('incomplete-warning');
+
+            row.classList.add('row-incomplete');
+        } else {
+            startCell.classList.remove('incomplete-warning');
+            endCell.classList.remove('incomplete-warning');
+            breakCell.classList.remove('incomplete-warning');
+            row.classList.remove('row-incomplete');
+        }
+    }
+
+
+    applyDefaultsBtn.addEventListener('click', () => {
+        const s = ensureSeconds(defaultStart.value);
+        const e = ensureSeconds(defaultEnd.value);
+        const b = defaultBreak.value.trim();
+
+        console.debug('[TS] applyDefaults clicked', {s, e, b});
+
+        document.querySelectorAll('#tableBody tr').forEach(row => {
+            // 休日出勤チェック済みの行はスキップ
+            const hs = row.querySelector('.holiday-switch');
+            if (hs && hs.checked) return;
+
+            // 日付を取得
+            const iso = row.querySelector('.date-cell')?.dataset?.iso;
+            if (!iso) return;
+
+            // 土日はスキップ
+            if (isWeekendIso(iso)) {
+                console.debug('[TS] applyDefaults skip weekend', iso);
+                return;
+            }
+
+            // 祝日はスキップ
+            if (isHolidayIso(iso)) {
+                console.debug('[TS] applyDefaults skip holiday', iso);
+                return;
+            }
+
+            // table-secondaryクラス（休日/祝日表示用）がある行もスキップ
+            if (row.classList.contains('table-secondary')) {
+                console.debug('[TS] applyDefaults skip table-secondary row', iso);
+                return;
+            }
+
+            const sc = row.querySelector('.time-cell[data-type="start"]');
+            const ec = row.querySelector('.time-cell[data-type="end"]');
+            const bc = row.querySelector('.break-cell');
+
+            if (sc.textContent.trim() === '' && TIME_PATTERNS.HH_MM_00.test(s)) {
+                console.debug('[TS] applyDefaults set start', iso, s);
+                sc.textContent = s;
+            }
+            if (ec.textContent.trim() === '' && TIME_PATTERNS.HH_MM_00.test(e)) {
+                console.debug('[TS] applyDefaults set end', iso, e);
+                ec.textContent = e;
+            }
+            if (bc.textContent.trim() === '' && b !== '') {
+                console.debug('[TS] applyDefaults set break', iso, b);
+                bc.textContent = b;
+            }
+            updateRowMetrics(row);
+        });
+    });
+
+    function getCsrf() {
+        const t = document.querySelector('meta[name="_csrf"]');
+        const h = document.querySelector('meta[name="_csrf_header"]');
+        return t && h ? {token: t.content, header: h.content} : null;
+    }
+
+    // 時刻セルクリック (documentレベルでイベント委譲)
+    document.addEventListener('click', e => {
+        const cell = e.target.closest('#workTable td.time-cell');
+        if (!cell) return;
+
+        const row = cell.parentElement;
+        const hs = row.querySelector('.holiday-switch');
+        if (hs && !hs.checked) return; // not allowed
+
+        document.querySelectorAll('td.time-cell.active').forEach(c => c.classList.remove('active'));
+        cell.classList.add('active');
+        currentCell = cell;
+
+        if (row) row.dataset.localEditing = '1';
+
+        const type = cell.dataset.type;
+        const dateCell = row.querySelector('.date-cell');
+        const iso = dateCell ? dateCell.dataset.iso : '';
+
+        const init = cell.textContent.trim();
+
+        // 時間の初期値を設定
+        let parsed = false;
+        if (TIME_PATTERNS.FULL.test(init)) {
+            const parts = init.split(':');
+            hour = Number(parts[0]);
+            minute = Number(parts[1]);
+            parsed = true;
+        } else {
+            const def = (type === 'start' ? defaultStart.value : defaultEnd.value);
+            if (TIME_PATTERNS.FULL.test(def)) {
+                const parts = def.split(':');
+                hour = Number(parts[0]);
+                minute = Number(parts[1]);
+                parsed = true;
+            }
+        }
+
+        if (!parsed) {
+            hour = 9;
+            minute = 0;
+        }
+
+        selectingHour = true;
+
+        // スマホ判定（768px以下）
+        const isMobile = window.innerWidth < 768;
+
+        if (isMobile && elements.mobilePickerModal) {
+            // スマホ: Bootstrapモーダルを使用
+            elements.mobileSelectedDateLabel.textContent = '日付: ' + iso;
+            elements.mobileCellTypeLabel.textContent = type === 'start' ? '出勤' : '退勤';
+            elements.mobileModeLabel.textContent = '時を設定してください (0-23)';
+            updateMobileDisplay();
+            setMobileHand();
+
+            const bsModal = new bootstrap.Modal(elements.mobilePickerModal);
+            bsModal.show();
+        } else {
+            // PC: 従来のピッカーを使用
+            selectedDateLabel.textContent = '日付: ' + iso;
+            cellTypeLabel.textContent = '種類: ' + (type === 'start' ? '出勤' : '退勤');
+            holidayLabel.style.display = 'none';
+            modeLabel.textContent = '時を設定してください (0-23)';
+            updateDisplay();
+            setHand();
+
+            const r = cell.getBoundingClientRect();
+
+            // まず表示して高さを取得可能にする
+            picker.style.display = 'block';
+            picker.setAttribute('aria-hidden', 'false');
+
+            const pickerHeight = picker.offsetHeight;
+            const viewportHeight = window.innerHeight;
+
+            // 画面下端からはみ出る場合は上に表示
+            if (r.bottom + 6 + pickerHeight > viewportHeight) {
+                picker.style.top = (r.top - pickerHeight - 6) + 'px';
+            } else {
+                picker.style.top = (r.bottom + 6) + 'px';
+            }
+
+            // 左端は画面外に出ないように調整
+            picker.style.left = Math.max(8, r.left) + 'px';
+
+            if (overlay) overlay.style.display = 'block';
+        }
+    });
+
+    function updateDisplay() {
+        display.textContent = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`;
+    }
+
+    function updateMobileDisplay() {
+        if (elements.mobileDisplay) {
+            elements.mobileDisplay.textContent = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`;
+        }
+    }
+
+    function setHand() {
+        const angle = selectingHour ? (hour % 24) * 15 : minute * 6;
+        hand.style.transform = `rotate(${angle}deg)`;
+    }
+
+    function setMobileHand() {
+        if (elements.mobileHand) {
+            const angle = selectingHour ? (hour % 24) * 15 : minute * 6;
+            elements.mobileHand.style.transform = `rotate(${angle}deg)`;
+        }
+    }
+
+    // モバイル用ドラッグイベント
+    if (elements.mobileDragArea) {
+        elements.mobileDragArea.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            dragStarted = false;
+            dragStartTime = Date.now();
+        }, {passive: false});
+
+        elements.mobileDragArea.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            if (e.touches.length === 0) return;
+            const touch = e.touches[0];
+            dragStarted = true;
+            const rect = elements.mobileClock.getBoundingClientRect();
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+            const dx = touch.clientX - cx;
+            const dy = touch.clientY - cy;
+            const angle = (Math.atan2(dy, dx) * 180 / Math.PI + 90 + 360) % 360;
+            elements.mobileHand.style.transform = `rotate(${angle}deg)`;
+            if (selectingHour) {
+                hour = Math.round(angle / 15) % 24;
+            } else {
+                minute = Math.round(angle / 6) % 60;
+            }
+            updateMobileDisplay();
+        }, {passive: false});
+
+        elements.mobileDragArea.addEventListener('touchend', () => {
+            if (selectingHour && dragStarted) {
+                selectingHour = false;
+                elements.mobileModeLabel.textContent = '分を設定してください (0-59)';
+                setMobileHand();
+            }
+            dragStarted = false;
+        });
+    }
+
+    // モバイル用確定ボタン
+    const mobilePickerConfirmBtn = document.getElementById('mobilePickerConfirm');
+    if (mobilePickerConfirmBtn) {
+        mobilePickerConfirmBtn.addEventListener('click', () => {
+            if (currentCell) {
+                const commitValue = elements.mobileDisplay.textContent;
+                const iso = currentCell.parentElement?.querySelector('.date-cell')?.dataset?.iso;
+                console.debug('[TS] mobile picker confirm', iso, commitValue);
+                currentCell.textContent = commitValue;
+                currentCell.classList.remove('active');
+                updateRowMetrics(currentCell.parentElement);
+                autoSaveRow(currentCell.parentElement);
+            }
+            // モーダルを閉じる
+            const modalInstance = bootstrap.Modal.getInstance(elements.mobilePickerModal);
+            if (modalInstance) modalInstance.hide();
+            // リセット
+            selectingHour = true;
+            currentCell = null;
+        });
+    }
+
+    // モバイルモーダルが閉じられた時の処理
+    if (elements.mobilePickerModal) {
+        elements.mobilePickerModal.addEventListener('hidden.bs.modal', () => {
+            if (currentCell) {
+                currentCell.classList.remove('active');
+                const r = currentCell.parentElement;
+                if (r && r.dataset.localEditing) delete r.dataset.localEditing;
+            }
+            currentCell = null;
+            selectingHour = true;
+        });
+    }
+
+    // マウスイベント (PC用)
+    dragArea.addEventListener('mousedown', () => {
+        dragStarted = false;
+        dragStartTime = Date.now();
+        document.addEventListener('mousemove', onDrag);
+        document.addEventListener('mouseup', onDrop);
+    });
+
+    // タッチイベント（スマホ対応）
+    dragArea.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        dragStarted = false;
+        dragStartTime = Date.now();
+        document.addEventListener('touchmove', onTouchDrag, {passive: false});
+        document.addEventListener('touchend', onTouchDrop);
+    }, {passive: false});
+
+    function onTouchDrag(ev) {
+        ev.preventDefault();
+        if (ev.touches.length === 0) return;
+        const touch = ev.touches[0];
+        dragStarted = true;
+        const rect = clock.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const dx = touch.clientX - cx;
+        const dy = touch.clientY - cy;
+        const angle = (Math.atan2(dy, dx) * 180 / Math.PI + 90 + 360) % 360;
+        hand.style.transform = `rotate(${angle}deg)`;
+        if (selectingHour) {
+            hour = Math.round(angle / 15) % 24;
+        } else {
+            minute = Math.round(angle / 6) % 60;
+        }
+        updateDisplay();
+        if (currentCell) {
+            currentCell.dataset.preview = display.textContent;
+        }
+    }
+
+    function onTouchDrop() {
+        document.removeEventListener('touchmove', onTouchDrag);
+        document.removeEventListener('touchend', onTouchDrop);
+        // onDropと同じ処理
+        if (selectingHour) {
+            selectingHour = false;
+            modeLabel.textContent = '分を設定してください (0-59)';
+            setHand();
+            return;
+        }
+        if (currentCell) {
+            if (dragStarted) {
+                const commitValue = currentCell.dataset.preview || display.textContent;
+                const iso = currentCell.parentElement.querySelector('.date-cell')?.dataset?.iso;
+                console.debug('[TS] picker commit (touch)', iso, commitValue);
+                currentCell.textContent = commitValue;
+                delete currentCell.dataset.preview;
+                currentCell.classList.remove('active');
+                updateRowMetrics(currentCell.parentElement);
+                autoSaveRow(currentCell.parentElement);
+            } else {
+                if (currentCell.dataset && currentCell.dataset.preview) delete currentCell.dataset.preview;
+                currentCell.classList.remove('active');
+            }
+        }
+        dragStarted = false;
+        closePicker();
+    }
+
+    function onDrag(ev) {
+        dragStarted = true;
+        const rect = clock.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const dx = ev.clientX - cx;
+        const dy = ev.clientY - cy;
+        const angle = (Math.atan2(dy, dx) * 180 / Math.PI + 90 + 360) % 360;
+        hand.style.transform = `rotate(${angle}deg)`;
+        if (selectingHour) {
+            hour = Math.round(angle / 15) % 24;
+        } else {
+            minute = Math.round(angle / 6) % 60;
+        }
+        updateDisplay();
+        // DO NOT write the value into the cell while dragging — only update the preview in the picker.
+        // Writing to the cell should only happen on drop/confirm to avoid accidental default writes
+        // when the UI is reconstructed (paging/refresh).
+        if (currentCell) {
+            // update metrics preview without committing to the table cell
+            // we still update metrics visually by setting a data attribute and recalculating when dropped
+            currentCell.dataset.preview = display.textContent;
+            // update a temporary visual on the picker only; avoid touching DOM cell text here
+            // (existing updateRowMetrics relies on cell text; we'll call updateRowMetrics on drop)
+        }
+    }
+
+    function onDrop() {
+        document.removeEventListener('mousemove', onDrag);
+        document.removeEventListener('mouseup', onDrop);
+        // only commit when a drag interaction occurred (user actively selected time)
+        if (selectingHour) {
+            selectingHour = false;
+            modeLabel.textContent = '分を設定してください (0-59)';
+            setHand();
+            return;
+        }
+        if (currentCell) {
+            if (dragStarted) {
+                // Commit the picked value into the cell only when the user finishes the interaction
+                // Prefer any preview value (dataset.preview) if present
+                const commitValue = currentCell.dataset.preview || display.textContent;
+                const iso = currentCell.parentElement.querySelector('.date-cell')?.dataset?.iso;
+                console.debug('[TS] picker commit', iso, commitValue);
+                currentCell.textContent = commitValue;
+                delete currentCell.dataset.preview;
+                currentCell.classList.remove('active');
+                updateRowMetrics(currentCell.parentElement);
+                // 自動保存: ドロップ後にサーバへ保存
+                autoSaveRow(currentCell.parentElement);
+            } else {
+                // user opened picker but didn't select (no drag) -> discard preview, do not commit
+                if (currentCell.dataset && currentCell.dataset.preview) delete currentCell.dataset.preview;
+                currentCell.classList.remove('active');
+            }
+        }
+        // reset drag flag for next interaction
+        dragStarted = false;
+        // 共通の閉じ処理を使う
+        closePicker();
+    }
+
+    // 共通: ピッカーを閉じる処理
+    function closePicker() {
+        if (currentCell) {
+            // remove any transient preview left on the cell
+            if (currentCell.dataset && currentCell.dataset.preview) delete currentCell.dataset.preview;
+            // clear local editing mark on the row
+            const r = currentCell.parentElement;
+            if (r && r.dataset.localEditing) delete r.dataset.localEditing;
+            currentCell.classList.remove('active');
+            currentCell = null;
+        }
+        if (picker) {
+            picker.style.display = 'none';
+            picker.setAttribute('aria-hidden', 'true');
+        }
+        if (overlay) overlay.style.display = 'none';
+        // モードをリセット
+        selectingHour = true;
+        dragStarted = false;
+    }
+
+    // 確定ボタン
+    const pickerConfirmBtn = document.getElementById('pickerConfirm');
+    if (pickerConfirmBtn) {
+        pickerConfirmBtn.addEventListener('click', () => {
+            if (currentCell) {
+                const commitValue = display.textContent;
+                const iso = currentCell.parentElement?.querySelector('.date-cell')?.dataset?.iso;
+                console.debug('[TS] picker confirm button', iso, commitValue);
+                currentCell.textContent = commitValue;
+                delete currentCell.dataset.preview;
+                currentCell.classList.remove('active');
+                updateRowMetrics(currentCell.parentElement);
+                autoSaveRow(currentCell.parentElement);
+            }
+            closePicker();
+        });
+    }
+
+    // キャンセルボタン
+    const pickerCancelBtn = document.getElementById('pickerCancel');
+    if (pickerCancelBtn) {
+        pickerCancelBtn.addEventListener('click', () => {
+            closePicker();
+        });
+    }
+
+    // Escape キーでピッカーを閉じる
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' || e.key === 'Esc') {
+            closePicker();
+        }
+    });
+
+    // オーバーレイクリックで閉じる
+    if (overlay) {
+        overlay.addEventListener('mousedown', () => {
+            closePicker();
+        });
+    }
+
+    // デバウンス用 map
+    const saveTimers = new Map();
+
+    // Conflict modal helpers
+    const conflictModalEl = document.getElementById('conflictModal');
+    const conflictReloadBtn = document.getElementById('conflictReload');
+    const conflictForceBtn = document.getElementById('conflictForce');
+    let pendingConflict = null; // { row, payload }
+
+    function showConflictModal(row, payload) {
+        pendingConflict = {row, payload};
+        if (typeof bootstrap !== 'undefined' && conflictModalEl) {
+            const m = new bootstrap.Modal(conflictModalEl);
+            m.show();
+        } else if (conflictModalEl) {
+            conflictModalEl.style.display = 'block';
+        }
+    }
+
+    if (conflictReloadBtn) {
+        conflictReloadBtn.addEventListener('click', () => {
+            // モーダルを閉じて最新データを取得
+            if (typeof bootstrap !== 'undefined' && conflictModalEl) {
+                bootstrap.Modal.getInstance(conflictModalEl)?.hide();
+            } else if (conflictModalEl) {
+                conflictModalEl.style.display = 'none';
+            }
+            pendingConflict = null;
+            loadTimesheetData();
+        });
+    }
+
+    if (conflictForceBtn) {
+        conflictForceBtn.addEventListener('click', async () => {
+            // force=true で現在の payload を再送
+            if (!pendingConflict) return;
+            if (typeof bootstrap !== 'undefined' && conflictModalEl) {
+                bootstrap.Modal.getInstance(conflictModalEl)?.hide();
+            } else if (conflictModalEl) {
+                conflictModalEl.style.display = 'none';
+            }
+            const payload = pendingConflict.payload;
+            pendingConflict = null;
+            try {
+                const csrf = getCsrf();
+                const headers = {'Content-Type': 'application/json'};
+                if (csrf) headers[csrf.header] = csrf.token;
+                const resp = await fetch('/timesheet/api/entry', {
+                    method: 'POST',
+                    headers,
+                    credentials: 'same-origin',
+                    body: JSON.stringify(Object.assign({}, payload, {force: true}))
+                });
+                const json = await resp.json().catch(() => ({}));
+                if (!resp.ok || !json.success) {
+                    console.warn('[TS] 強制上書き失敗', json);
+                    alert('強制上書きに失敗しました。');
+                } else {
+                    // 成功: 行を更新
+                    loadTimesheetData();
+                }
+            } catch (e) {
+                console.error('[TS] 強制上書きエラー', e);
+                alert('ネットワークエラーが発生しました。');
+            }
+        });
+    }
+
+    function autoSaveRow(row) {
+        const dateCell = row.querySelector('.date-cell');
+        const startCell = row.querySelector('.time-cell[data-type="start"]');
+        const endCell = row.querySelector('.time-cell[data-type="end"]');
+        const breakCell = row.querySelector('.break-cell');
+        const locationBtn = row.querySelector('.work-location-btn');
+        const noteSelect = row.querySelector('.note-select');
+
+        if (!dateCell) return;
+
+        const iso = dateCell.dataset.iso;
+        const start = startCell?.textContent.trim() || '';
+        const end = endCell?.textContent.trim() || '';
+        const breakVal = breakCell?.textContent.trim() || '';
+        const workLocation = locationBtn?.dataset.location || null;
+        // --- は空文字を明示送信し、サーバー側で既存の備考をクリアできるようにする。
+        const note = noteSelect ? noteSelect.value : null;
+
+        // 変則勤務・遅刻・早退データを取得
+        // undefinedの場合は空文字列を送信してサーバー側でクリアさせる
+        const irregularType = row.dataset.irregularType !== undefined ? row.dataset.irregularType : '';
+        const irregularDesc = row.dataset.irregularDesc !== undefined ? row.dataset.irregularDesc : '';
+        const irregularData = row.dataset.irregularData !== undefined ? row.dataset.irregularData : '';
+        const lateTime = row.dataset.lateTime !== undefined ? row.dataset.lateTime : '';
+        const lateDesc = row.dataset.lateDesc !== undefined ? row.dataset.lateDesc : '';
+        const earlyTime = row.dataset.earlyTime !== undefined ? row.dataset.earlyTime : '';
+        const earlyDesc = row.dataset.earlyDesc !== undefined ? row.dataset.earlyDesc : '';
+
+        // 既存のタイマーがあればクリア
+        if (saveTimers.has(iso)) clearTimeout(saveTimers.get(iso));
+
+        // CSRF ヘッダ
+        const csrf = getCsrf();
+
+        // 準備するペイロード
+        const payload = {
+            workDate: iso,
+            startTime: start || null,
+            endTime: end || null,
+            breakMinutes: breakVal || null,
+            workLocation: workLocation,
+            note: note,
+            // 変則勤務・遅刻・早退（空文字列の場合もサーバーに送信してクリア）
+            irregularWorkType: irregularType || '',
+            irregularWorkDesc: irregularDesc || '',
+            irregularWorkData: irregularData || '',
+            lateTime: lateTime || '',
+            lateDesc: lateDesc || '',
+            earlyTime: earlyTime || '',
+            earlyDesc: earlyDesc || ''
+        };
+
+        // すべて空欄の場合はforce=trueで明示的にクリアをサーバへ伝える
+        if (!start && !end && !breakVal && !workLocation) {
+            payload.force = true;
+        }
+
+        // 即時保存（短い遅延でバッチ化）
+        const t = setTimeout(async () => {
+            try {
+                const headers = {'Content-Type': 'application/json'};
+                if (csrf) headers[csrf.header] = csrf.token;
+                const resp = await fetch('/timesheet/api/entry', {
+                    method: 'POST',
+                    headers,
+                    credentials: 'same-origin',
+                    body: JSON.stringify(payload)
+                });
+                if (resp.status === 409) {
+                    // 競合発生: モーダルを表示して対応を促す
+                    showConflictModal(row, payload);
+                    return;
+                }
+                const json = await resp.json().catch(() => ({}));
+                if (!resp.ok || !json.success) {
+                    console.warn('[TS] 自動保存失敗', json);
+                }
+            } catch (e) {
+                console.error('[TS] 自動保存エラー', e);
+            } finally {
+                saveTimers.delete(iso);
+            }
+        }, 300);
+        saveTimers.set(iso, t);
+    }
+
+    // 休憩セルの入力に対してデバウンス自動保存 (documentレベルでイベント委譲)
+    document.addEventListener('input', e => {
+        const cell = e.target.closest('#workTable .break-cell');
+        if (!cell) return;
+        const row = cell.parentElement;
+        updateRowMetrics(row);
+        const iso = row.querySelector('.date-cell').dataset.iso;
+        if (saveTimers.has(iso)) clearTimeout(saveTimers.get(iso));
+        const t = setTimeout(() => autoSaveRow(row), 600);
+        saveTimers.set(iso, t);
+    });
+
+    // 出社区分ボタンのクリックイベント (documentレベルでイベント委譲)
+    document.addEventListener('click', e => {
+        const btn = e.target.closest('#workTable .work-location-btn');
+        if (btn) {
+            const currentLocation = btn.dataset.location || '出社';
+            let newLocation;
+            // 出社 -> 在宅 -> 出社 のサイクル
+            if (currentLocation === '出社') {
+                newLocation = '在宅';
+            } else {
+                newLocation = '出社';
+            }
+            btn.dataset.location = newLocation;
+            btn.textContent = newLocation;
+
+            // ボタンのスタイルを更新
+            btn.classList.remove('btn-primary', 'btn-success');
+            if (newLocation === '出社') {
+                btn.classList.add('btn-primary');
+            } else {
+                btn.classList.add('btn-success');
+            }
+
+            // 自動保存
+            const row = btn.closest('tr');
+            if (row) {
+                autoSaveRow(row);
+            }
+
+        }
+    });
+
+    // 備考プルダウンの変更で自動保存 (documentレベルでイベント委譲)
+    document.addEventListener('change', e => {
+        // 備考プルダウンの変更で自動保存
+        const select = e.target.closest('#workTable .note-select');
+        if (select) {
+            const row = select.closest('tr');
+            if (row) {
+                const noteValue = select.value;
+
+                // 土日祝判定
+                const iso = row.querySelector('.date-cell')?.dataset?.iso;
+                const dateForCheck = iso ? new Date(iso + 'T00:00:00') : new Date();
+                const dayOfWeek = dateForCheck.getDay();
+                const isWeekendDay = (dayOfWeek === 0 || dayOfWeek === 6);
+                const isHolidayDay = row.dataset.isHoliday === '1';
+                const isHolidayOrWeekend = isWeekendDay || isHolidayDay;
+
+                // 休日・祝日・年休などの場合は入力値をクリアして無効化
+                if (isClearNote(noteValue)) {
+                    // 完全休みの備考の場合は入力値をクリアして無効化
+                    const startCell = row.querySelector('.time-cell[data-type="start"]');
+                    const endCell = row.querySelector('.time-cell[data-type="end"]');
+                    const breakCell = row.querySelector('.break-cell');
+                    const durationCell = row.querySelector('.duration-cell');
+                    const workingCell = row.querySelector('.working-cell');
+
+                    if (startCell) startCell.textContent = '';
+                    if (endCell) endCell.textContent = '';
+                    if (breakCell) breakCell.textContent = '';
+                    if (durationCell) durationCell.textContent = '';
+                    if (workingCell) workingCell.textContent = '';
+
+                    console.debug('[TS] cleared row due to note:', noteValue);
+
+                    // 入力を無効化
+                    disableRowInput(row, true, noteValue);
+                } else if (isHolidayOrWeekend && !isWorkingNote(noteValue)) {
+                    // 土日祝で勤務系備考がない場合（「---」含む）は無効化（クリアはしない）
+                    disableRowInput(row, true, noteValue);
+                } else {
+                    // 平日、または土日祝で勤務系備考がある場合は有効化
+                    disableRowInput(row, false, noteValue);
+                }
+                updateWorkingDayButton(row, noteValue);
+                // 警告チェック
+                checkRowWarnings(row);
+                autoSaveRow(row);
+            }
+        }
+    });
+
+    // 行の入力を無効化/有効化する関数
+    // noteValue: 備考の値（土日祝で午前休・午後休・現場休の場合は出社区分を有効化するため）
+    function disableRowInput(row, disable, noteValue = '') {
+        const timeCells = row.querySelectorAll('.time-cell');
+        timeCells.forEach(cell => {
+            if (disable) {
+                cell.classList.add('disabled');
+                cell.style.pointerEvents = 'none';
+                cell.style.opacity = '0.5';
+                cell.style.cursor = 'not-allowed';
+            } else {
+                cell.classList.remove('disabled');
+                cell.style.pointerEvents = '';
+                cell.style.opacity = '';
+                cell.style.cursor = '';
+            }
+        });
+
+        const breakCell = row.querySelector('.break-cell');
+        if (breakCell) {
+            breakCell.contentEditable = disable ? 'false' : 'true';
+            breakCell.style.opacity = disable ? '0.5' : '';
+            breakCell.style.cursor = disable ? 'not-allowed' : '';
+        }
+
+        // 出社区分ボタン
+        // 土日祝でも午前休・午後休・現場休、または変則勤務（振替出勤・休日出勤）の場合は有効化
+        const locationBtn = row.querySelector('.work-location-btn');
+        if (locationBtn) {
+            const irregularType = row.dataset.irregularType || '';
+            if (NOTE_RULES.LOCATION_ENABLED_NOTES.includes(noteValue) || isWorkingIrregularType(irregularType)) {
+                // 勤務系の備考または変則勤務の場合は出社区分を有効化
+                locationBtn.disabled = false;
+            } else {
+                locationBtn.disabled = disable;
+            }
+        }
+    }
+
+    // helper to enable/disable editable cells in a row
+    function setRowEditable(row, editable) {
+        // time cells: allow click only if editable (we'll use a CSS class to indicate disabled state)
+        const timeCells = row.querySelectorAll('.time-cell');
+        timeCells.forEach(tc => {
+            if (editable) {
+                tc.classList.remove('disabled');
+                tc.style.pointerEvents = '';
+                tc.style.opacity = '';
+            } else {
+                tc.classList.add('disabled');
+                tc.style.pointerEvents = 'none';
+                tc.style.opacity = '0.6';
+                tc.textContent = ''; // clear displayed times per requirement
+            }
+        });
+        const breakCell = row.querySelector('.break-cell');
+        if (breakCell) {
+            breakCell.contentEditable = editable ? 'true' : 'false';
+            if (!editable) breakCell.textContent = '';
+            breakCell.style.opacity = editable ? '' : '0.6';
+        }
+        // recalc metrics
+        updateRowMetrics(row);
+    }
+
+    // SSE 受信: 他クライアントの更新を反映
+    (function setupSse() {
+        try {
+            const es = new EventSource('/timesheet/api/stream');
+            es.addEventListener('timesheet-updated', e => {
+                try {
+                    const data = JSON.parse(e.data);
+                    const iso = data.workDate || data.workDateString || (data.workDate?.toString());
+                    if (!iso) return;
+                    // 該当行が存在すれば更新
+                    const dateCell = document.querySelector(`#tableBody tr .date-cell[data-iso="${iso}"]`);
+                    if (!dateCell) return;
+                    const tr = dateCell.closest('tr');
+                    if (!tr) return;
+                    // do not overwrite if user is editing this row locally
+                    if (tr.dataset.localEditing) {
+                        console.debug('[TS] SSE update skipped for locally edited row', iso);
+                        return;
+                    }
+                    // mark to suppress auto-save for programmatic update
+                    tr.dataset.suppressAutoSave = '1';
+                    try {
+                        tr.querySelector('.time-cell[data-type="start"]').textContent = data.startTime ? ensureSeconds(data.startTime) : '';
+                        tr.querySelector('.time-cell[data-type="end"]').textContent = data.endTime ? ensureSeconds(data.endTime) : '';
+                        tr.querySelector('.break-cell').textContent = data.breakMinutes != null ? data.breakMinutes : '';
+                        tr.querySelector('.duration-cell').textContent = data.durationMinutes != null ? fmtHM(data.durationMinutes) : '';
+                        tr.querySelector('.working-cell').textContent = data.workingMinutes != null ? fmtHM(data.workingMinutes) : '';
+                        // reflect holidayWork in switch and editability
+                        const hs2 = tr.querySelector('.holiday-switch');
+                        if (hs2) {
+                            hs2.checked = !!data.holidayWork;
+                            setRowEditable(tr, !hs2.checked);
+                        }
+                    } finally {
+                        // remove suppression after microtask to allow any downstream DOM changes to settle
+                        setTimeout(() => {
+                            delete tr.dataset.suppressAutoSave;
+                        }, 0);
+                    }
+                } catch (err) {
+                    console.warn('SSE parse error', err);
+                }
+            });
+            es.addEventListener('break', () => {
+                // 個別イベントを無視して summary 等で一括更新する仕組みに任せる
+            });
+            es.addEventListener('error', _ => {
+                console.warn('SSE error');
+                es.close();
+                // 再接続ロジックを入れる
+                setTimeout(setupSse, 3000);
+            });
+        } catch (err) {
+            console.warn('SSE unsupported', err);
+        }
+    })();
+
+    // MutationObserver: tableBody 下の任意のセルのテキストが変わったら自動保存をトリガー
+    (function setupAutoSaveObserver() {
+        const tbody = document.getElementById('tableBody');
+        if (!tbody) return;
+        const observer = new MutationObserver(mutations => {
+            if (suppressAutoSaveAll > 0) return;
+            const rowsToSave = new Set();
+            for (const m of mutations) {
+                // 変更元ノードから該当行を探す
+                let target = m.target;
+                // characterData の場合 target is text node -> parentElement
+                if (target.nodeType === Node.TEXT_NODE) target = target.parentElement;
+                if (!target) continue;
+                const tr = target.closest('tr');
+                if (!tr) continue;
+                // suppress programmatic updates marked by dataset flag
+                if (tr.dataset.suppressAutoSave) continue;
+                rowsToSave.add(tr);
+            }
+            // call autoSaveRow for each unique row (autoSaveRow debounces internally)
+            for (const tr of rowsToSave) {
+                try {
+                    autoSaveRow(tr);
+                } catch (e) {
+                    console.error('autoSaveObserver error', e);
+                }
+            }
+        });
+        observer.observe(tbody, {subtree: true, characterData: true, childList: true});
+    })();
+
+    // 月初期化
+    (function () {
+        const now = new Date();
+        const y = now.getFullYear();
+        const m = now.getMonth() + 1;
+        monthInput.value = `${y}-${String(m).padStart(2, '0')}`;
+    })();
+
+    function dayLabel(date) {
+        // 「〇日」表記のみ返す
+        return `${date.getDate()}日`;
+    }
+
+    function shortDay(date) {
+        return ['日', '月', '火', '水', '木', '金', '土'][date.getDay()];
+    }
+
+    function calcLastDay(year, month1) {
+        return new Date(year, month1, 0).getDate();
+    }
+
+    function isHolidayIso(iso) {
+        try {
+            const y = Number(iso.split('-')[0]);
+            const row = document.querySelector(`.date-cell[data-iso="${iso}"]`)?.closest('tr');
+            return row?.dataset?.isHoliday === '1';
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function isWeekendIso(iso) {
+        try {
+            const d = new Date(iso + 'T00:00:00');
+            const wd = d.getDay();
+            return wd === 0 || wd === 6;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function rowHasWorkingIrregular(row) {
+        const type = row.dataset.irregularType || '';
+        if (isWorkingIrregularType(type)) return true;
+        if (row.dataset.irregularData) {
+            try {
+                const items = JSON.parse(row.dataset.irregularData);
+                if (Array.isArray(items)) {
+                    return items.some(item => isWorkingIrregularType(item.type));
+                }
+            } catch (e) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    function updateWorkingDayButton(row, noteValue = null) {
+        const btn = row.querySelector('.workday-btn');
+        if (!btn) return;
+        const iso = row.querySelector('.date-cell')?.dataset?.iso || '';
+        const isWeekday = iso ? !isWeekendIso(iso) : true;
+        const noteSelect = row.querySelector('.note-select');
+        const resolvedNote = noteValue !== null ? noteValue : (noteSelect ? noteSelect.value : '');
+        const hasWorkingIrregular = rowHasWorkingIrregular(row);
+        const isWorking = (isWeekday && !['祝日', '休日'].includes(resolvedNote)) || hasWorkingIrregular;
+
+        btn.textContent = isWorking ? '稼働' : '非稼働';
+        btn.classList.remove('btn-danger', 'btn-outline-secondary');
+        btn.classList.add(isWorking ? 'btn-danger' : 'btn-outline-secondary');
+        btn.dataset.working = isWorking ? '1' : '0';
+    }
+
+    function applyRowShade(tr) {
+        // remove previous shading
+        tr.classList.remove('table-secondary');
+        // prefer precomputed dataset flags when available
+        const isHoliday = tr.dataset.isHoliday === '1' || isHolidayIso(tr.querySelector('.date-cell')?.dataset?.iso || '');
+        const isWeekend = tr.dataset.isWeekend === '1' || isWeekendIso(tr.querySelector('.date-cell')?.dataset?.iso || '');
+        if (isHoliday || isWeekend) tr.classList.add('table-secondary');
+    }
+
+    function rebuildRows(ym) {
+        const tbody = document.getElementById('tableBody');
+        if (!tbody) return;
+        const [y, mStr] = ym.split('-');
+        const yNum = Number(y);
+        const mNum = Number(mStr);
+        if (!yNum || !mNum) return;
+        const lastDay = calcLastDay(yNum, mNum);
+        tbody.innerHTML = '';
+        for (let d = 1; d <= lastDay; d++) {
+            const iso = `${yNum}-${String(mNum).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+            const date = new Date(yNum, mNum - 1, d);
+            const tr = document.createElement('tr');
+            if (iso === new Date().toISOString().substring(0, 10)) tr.classList.add('table-primary');
+            const isWeekend = isWeekendIso(iso);
+            tr.dataset.isWeekend = isWeekend ? '1' : '0';
+            tr.innerHTML = `<td class="date-cell" data-iso="${iso}"><span>${dayLabel(date)}</span><span class="holiday" style="display:none;"></span></td>` +
+                `<td class="weekday-cell">${shortDay(date)}</td>` +
+                `<td class="workday-cell"><button class="btn btn-sm btn-outline-secondary workday-btn" type="button" disabled>非稼働</button></td>` +
+                `<td class="location-cell"><button class="btn btn-sm btn-primary work-location-btn" type="button" data-location="出社">出社</button></td>` +
+                `<td class="note-cell">
+                    <select class="form-select form-select-sm note-select">
+                        <option value="">---</option>
+                        <option value="午前休">午前休</option>
+                        <option value="午後休">午後休</option>
+                        <option value="休日">休日</option>
+                        <option value="祝日">祝日</option>
+                        <option value="会社休">会社休</option>
+                        <option value="現場休">現場休</option>
+                        <option value="対象外">対象外</option>
+                    </select>
+                </td>` +
+                `<td class="free-note-cell"><button class="btn btn-sm btn-outline-info free-note-btn" type="button" title="自由備考"><i class="bi bi-chat-left-text"></i></button><span class="free-note-text ms-1" style="font-size: 0.85rem; color: #666;"></span></td>` +
+                `<td class="irregular-cell"><button class="btn btn-sm btn-outline-secondary irregular-btn" type="button">表示</button><span class="irregular-type-label ms-1"></span></td>` +
+                `<td class="time-cell" data-type="start"></td>` +
+                `<td class="time-cell" data-type="end"></td>` +
+                `<td class="break-cell" contenteditable="true" inputmode="numeric"></td>` +
+                `<td class="duration-cell"></td>` +
+                `<td class="working-cell"></td>` +
+                `<td class="lateearly-cell"><button class="btn btn-sm btn-outline-warning late-btn" type="button">遅刻</button><button class="btn btn-sm btn-outline-info early-btn" type="button">早退</button></td>` +
+                `<td class="clear-cell"><button class='btn btn-outline-secondary btn-sm reset-row-btn' type='button'>リセット</button></td>`;
+            tbody.appendChild(tr);
+
+            // 平日は編集可能、土日は編集不可
+            if (isWeekend) {
+                setRowEditable(tr, false);
+            } else {
+                setRowEditable(tr, true);
+            }
+
+            // 土曜日・日曜日の場合は備考列のプルダウンをデフォルトで「休日」を設定
+            const noteSelect = tr.querySelector('.note-select');
+            if (isWeekend && noteSelect) {
+                noteSelect.value = '休日';
+                // 休日の場合は入力を無効化
+                disableRowInput(tr, true);
+                checkRowWarnings(tr);
+            }
+
+            applyRowShade(tr);
+            updateWorkingDayButton(tr, noteSelect ? noteSelect.value : null);
+        }
+
+        (async () => {
+            suspendAutoSave();
+            try {
+                const monthInput = document.getElementById('monthInput');
+                const [selectedYear, selectedMonth] = monthInput.value.split('-').map(Number);
+                const holidayMap = await fetchHolidays(selectedYear);
+                populateHolidayInfo(holidayMap, selectedMonth);
+                tbody.querySelectorAll('.date-cell').forEach(cell => {
+                    const iso = cell.dataset.iso;
+                    if (holidayMap[iso]) {
+                        const tr = cell.closest('tr');
+                        if (tr) {
+                            tr.dataset.isHoliday = '1';
+
+                            // 祝日の場合は備考列のプルダウンをデフォルトで「祝日」を設定
+                            const noteSelect = tr.querySelector('.note-select');
+                            if (noteSelect) {
+                                noteSelect.value = '祝日';
+                                // 祝日の場合は入力を無効化
+                                disableRowInput(tr, true);
+                                checkRowWarnings(tr);
+                            }
+
+                            applyRowShade(tr);
+                            updateWorkingDayButton(tr, noteSelect ? noteSelect.value : null);
+                        }
+                    }
+                });
+            } catch (e) {
+                console.warn('祝日再表示失敗', e);
+            } finally {
+                resumeAutoSave();
+            }
+        })();
+    }
+
+    async function loadTimesheetData() {
+        showLoading('timesheet', '勤務表を読み込み中...');
+        const [year, month] = monthInput.value.split('-').map(Number);
+        const lastDay = calcLastDay(year, month);
+        const from = `${year}-${String(month).padStart(2, '0')}-01`;
+        const to = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+        try {
+            const resp = await fetch(`/timesheet/api?from=${from}&to=${to}`, {credentials: 'same-origin'});
+            if (!resp.ok) {
+                const body = await resp.text().catch(() => '');
+                console.error(`[TS] 取得失敗 status=${resp.status} body=${body.substring(0, 200)}`);
+                if (resp.status === 401) {
+                    console.warn('[TS] 認証期限切れ: ログイン画面へ遷移推奨');
+                }
+                return;
+            }
+            const entries = await resp.json();
+            const map = {};
+            for (const e of entries) map[e.workDate] = e;
+            // ensure holiday info is available for the month so we can create switches for weekday holidays
+            const ymYear = Number(monthInput.value.split('-')[0]);
+            const holidayMap = await fetchHolidays(ymYear);
+
+            document.querySelectorAll('#tableBody tr').forEach(row => {
+                const iso = row.querySelector('.date-cell').dataset.iso;
+                // don't overwrite rows that are being edited locally by the user
+                if (row.dataset.localEditing) {
+                    console.debug('[TS] loadTimesheetData skip locally editing row', iso);
+                    return;
+                }
+                const data = map[iso];
+                // suppress observer-triggered auto-save for this programmatic update
+                row.dataset.suppressAutoSave = '1';
+                try {
+                    const isWeekend = isWeekendIso(iso);
+                    const isHoliday = !!holidayMap[iso];
+                    row.dataset.isWeekend = isWeekend ? '1' : '0';
+                    row.dataset.isHoliday = isHoliday ? '1' : '0';
+
+                    if (!data) {
+                        // clear cells
+                        console.debug('[TS] loadTimesheetData clear row', iso);
+                        row.querySelector('.time-cell[data-type="start"]').textContent = '';
+                        row.querySelector('.time-cell[data-type="end"]').textContent = '';
+                        row.querySelector('.break-cell').textContent = '';
+                        row.querySelector('.duration-cell').textContent = '';
+                        row.querySelector('.working-cell').textContent = '';
+
+                        // 出社区分ボタンをデフォルト「出社」に設定
+                        const locationBtn = row.querySelector('.work-location-btn');
+                        if (locationBtn) {
+                            locationBtn.dataset.location = '出社';
+                            locationBtn.textContent = '出社';
+                            locationBtn.classList.remove('btn-success');
+                            locationBtn.classList.add('btn-primary');
+                        }
+
+                        // set weekday from date
+                        const date = new Date(iso + 'T00:00:00');
+                        const wd = shortDay(date);
+                        const wdEl = row.querySelector('.weekday-cell');
+                        if (wdEl) wdEl.textContent = wd;
+                        const noteSelect = row.querySelector('.note-select');
+                        if (noteSelect) {
+                            noteSelect.value = isHoliday ? '祝日' : (isWeekend ? '休日' : '');
+                        }
+                        if (isHoliday || isWeekend) {
+                            disableRowInput(row, true, noteSelect ? noteSelect.value : '');
+                        } else {
+                            setRowEditable(row, true);
+                            disableRowInput(row, false, noteSelect ? noteSelect.value : '');
+                        }
+                        // ensure shading according to weekend/holiday
+                        applyRowShade(row);
+                        updateWorkingDayButton(row, noteSelect ? noteSelect.value : null);
+                        checkRowWarnings(row);
+                        return;
+                    }
+
+                    // populate cells from data
+                    console.debug('[TS] loadTimesheetData populate row', iso, data);
+                    row.querySelector('.time-cell[data-type="start"]').textContent = data.startTime ? ensureSeconds(data.startTime) : '';
+                    row.querySelector('.time-cell[data-type="end"]').textContent = data.endTime ? ensureSeconds(data.endTime) : '';
+                    row.querySelector('.break-cell').textContent = data.breakMinutes != null ? data.breakMinutes : '';
+                    row.querySelector('.duration-cell').textContent = data.durationMinutes != null ? fmtHM(data.durationMinutes) : '';
+                    row.querySelector('.working-cell').textContent = data.workingMinutes != null ? fmtHM(data.workingMinutes) : '';
+
+                    // reflect workLocation (出社区分ボタン)
+                    const locationBtn = row.querySelector('.work-location-btn');
+                    if (locationBtn) {
+                        const loc = data.workLocation || '出社';
+                        locationBtn.dataset.location = loc;
+                        locationBtn.textContent = loc;
+                        locationBtn.classList.remove('btn-primary', 'btn-success');
+                        if (loc === '出社') {
+                            locationBtn.classList.add('btn-primary');
+                        } else {
+                            locationBtn.classList.add('btn-success');
+                        }
+                    }
+
+                    // reflect irregular work data (変則勤務)
+                    const irregularTypeValue = data.irregularWorkType || '';
+                    row.dataset.irregularType = irregularTypeValue;
+                    row.dataset.irregularDesc = data.irregularWorkDesc || '';
+                    // 追加: 複数データをdatasetに反映
+                    if (data.irregularWorkData) {
+                        row.dataset.irregularData = data.irregularWorkData;
+                    } else {
+                        delete row.dataset.irregularData;
+                    }
+                    const irregularBtn = row.querySelector('.irregular-btn');
+                    const irregularTypeLabel = row.querySelector('.irregular-type-label');
+                    if (irregularBtn) {
+                        if (irregularTypeValue) {
+                            irregularBtn.classList.remove('btn-outline-secondary');
+                            irregularBtn.classList.add('btn-secondary');
+                        } else {
+                            irregularBtn.classList.remove('btn-secondary');
+                            irregularBtn.classList.add('btn-outline-secondary');
+                        }
+                    }
+                    if (irregularTypeLabel) {
+                        // 複数件表示対応（種類のみ表示、説明は不要）
+                        let irregularList = [];
+                        if (row.dataset.irregularData) {
+                            try {
+                                const items = JSON.parse(row.dataset.irregularData);
+                                if (Array.isArray(items)) {
+                                    irregularList = items.map(item => `・${item.type}`);
+                                }
+                            } catch (e) {
+                                // パース失敗時は旧形式
+                                if (irregularTypeValue) irregularList = [`・${irregularTypeValue}`];
+                            }
+                        } else if (irregularTypeValue) {
+                            irregularList = [`・${irregularTypeValue}`];
+                        }
+                        irregularTypeLabel.innerHTML = irregularList.join('');
+                    }
+
+                    // reflect late/early data
+                    row.dataset.lateTime = data.lateTime || '';
+                    row.dataset.lateDesc = data.lateDesc || '';
+                    row.dataset.earlyTime = data.earlyTime || '';
+                    row.dataset.earlyDesc = data.earlyDesc || '';
+                    row.dataset.freeNote = data.freeNote || '';
+                    const lateBtn = row.querySelector('.late-btn');
+                    const earlyBtn = row.querySelector('.early-btn');
+                    const freeNoteBtn = row.querySelector('.free-note-btn');
+                    if (lateBtn) {
+                        if (data.lateTime) {
+                            lateBtn.classList.add('has-data');
+                        } else {
+                            lateBtn.classList.remove('has-data');
+                        }
+                    }
+                    if (earlyBtn) {
+                        if (data.earlyTime) {
+                            earlyBtn.classList.add('has-data');
+                        } else {
+                            earlyBtn.classList.remove('has-data');
+                        }
+                    }
+                    if (freeNoteBtn) {
+                        if (data.freeNote) {
+                            freeNoteBtn.classList.add('has-data');
+                            // テキスト表示を更新
+                            const freeNoteText = row.querySelector('.free-note-text');
+                            if (freeNoteText) {
+                                const displayText = data.freeNote.length > 50 ? data.freeNote.substring(0, 50) + '...' : data.freeNote;
+                                freeNoteText.textContent = displayText;
+                                freeNoteText.style.display = 'inline';
+                            }
+                        } else {
+                            freeNoteBtn.classList.remove('has-data');
+                            const freeNoteText = row.querySelector('.free-note-text');
+                            if (freeNoteText) {
+                                freeNoteText.textContent = '';
+                                freeNoteText.style.display = 'none';
+                            }
+                        }
+                    }
+
+                    // reflect note data
+                    const noteSelect = row.querySelector('.note-select');
+
+                    // 土日祝判定
+                    const dateForCheck = new Date(iso + 'T00:00:00');
+                    const dayForCheck = dateForCheck.getDay();
+                    const isWeekendDay = (dayForCheck === 0 || dayForCheck === 6);
+                    const isHolidayDay = row.dataset.isHoliday === '1';
+                    const isHolidayOrWeekend = isWeekendDay || isHolidayDay;
+                    // 空の備考も反映し、---を選択した後に旧値が画面へ戻らないようにする。
+                    const noteValue = data.note || (isHolidayDay ? '祝日' : (isWeekendDay ? '休日' : ''));
+                    if (noteSelect) {
+                        noteSelect.value = noteValue;
+                    }
+
+                    // 備考が休日系の場合は入力を無効化
+                    const hasWorkingIrregular = irregularItems.some(item => isWorkingIrregularType(item.type));
+
+                    if (isClearNote(noteValue) && !hasWorkingIrregular) {
+                        // 完全休みの備考（変則勤務で勤務扱いでない場合）
+                        disableRowInput(row, true, noteValue);
+                    } else if (isHolidayOrWeekend && hasWorkingIrregular) {
+                        // 土日祝で変則勤務が振替出勤・休日出勤の場合は有効化
+                        setRowEditable(row, true);
+                        disableRowInput(row, false, noteValue);
+                    } else if (isHolidayOrWeekend && !isWorkingNote(noteValue) && !hasWorkingIrregular) {
+                        // 土日祝で勤務系備考がない場合（「---」含む）は無効化
+                        disableRowInput(row, true, noteValue);
+                    } else {
+                        // 平日、または土日祝で勤務系備考がある場合は有効化
+                        setRowEditable(row, true);
+                        disableRowInput(row, false, noteValue);
+                    }
+
+                    // ensure weekday shown
+                    const wd = shortDay(dateForCheck);
+                    const wdEl = row.querySelector('.weekday-cell');
+                    if (wdEl) wdEl.textContent = wd;
+                    // update shading
+                    applyRowShade(row);
+                    updateWorkingDayButton(row, noteSelect ? noteSelect.value : null);
+
+                    // 警告チェック
+                    checkRowWarnings(row);
+                } finally {
+                    // remove suppression after microtask to allow MutationObserver to ignore this programmatic change
+                    setTimeout(() => {
+                        delete row.dataset.suppressAutoSave;
+                    }, 0);
+                }
+
+            });
+
+            // 実働合計を更新
+            if (typeof window.refreshTotalWorking === 'function') {
+                window.refreshTotalWorking();
+            }
+
+        } catch (e) {
+            console.error('[TS] ネットワーク/パース失敗', e);
+        } finally {
+            hideLoading('timesheet');
+        }
+    }
+
+    function setMonth(year, month) {
+        if (month < 1) {
+            year -= 1;
+            month = 12;
+        }
+        if (month > 12) {
+            year += 1;
+            month = 1;
+        }
+        const ym = `${year}-${String(month).padStart(2, '0')}`;
+        if (monthInput) monthInput.value = ym;
+        suspendAutoSave();
+        rebuildRows(ym);
+        loadTimesheetData().finally(() => resumeAutoSave());
+    }
+
+    if (prevBtn) {
+        prevBtn.addEventListener('click', () => {
+            if (!monthInput) return;
+            const [y, m] = monthInput.value.split('-').map(Number);
+            setMonth(y, m - 1);
+        });
+    }
+    if (nextBtn) {
+        nextBtn.addEventListener('click', () => {
+            if (!monthInput) return;
+            const [y, m] = monthInput.value.split('-').map(Number);
+            setMonth(y, m + 1);
+        });
+    }
+    if (monthInput) {
+        monthInput.addEventListener('change', () => {
+            const [y, m] = monthInput.value.split('-').map(Number);
+            setMonth(y, m);
+        });
+    }
+    if (monthInput) {
+        suspendAutoSave();
+        rebuildRows(monthInput.value);
+        loadTimesheetData().finally(() => resumeAutoSave());
+    }
+
+
+    // リセットボタン（各行）- 勤務時間・休憩・備考を初期状態に戻す (documentレベルでイベント委譲)
+    document.addEventListener('click', e => {
+        const btn = e.target.closest('#workTable .reset-row-btn');
+        if (!btn) return;
+        const row = btn.closest('tr');
+        if (!row) return;
+
+        row.dataset.suppressAutoSave = '1';
+
+        const cells = {
+            start: row.querySelector('.time-cell[data-type="start"]'),
+            end: row.querySelector('.time-cell[data-type="end"]'),
+            break: row.querySelector('.break-cell'),
+            duration: row.querySelector('.duration-cell'),
+            working: row.querySelector('.working-cell')
+        };
+
+        // 勤務時間をクリア
+        Object.values(cells).forEach(cell => {
+            if (cell) cell.textContent = '';
+        });
+
+        // 日付を取得して土日祝判定
+        const iso = row.querySelector('.date-cell')?.dataset?.iso;
+        const isWeekend = iso ? isWeekendIso(iso) : false;
+        const isHoliday = row.dataset.isHoliday === '1';
+
+        // 備考を初期状態に戻す（土日=休日、祝日=祝日、平日=空欄）
+        const noteSelect = row.querySelector('.note-select');
+        if (noteSelect) {
+            if (isHoliday) {
+                noteSelect.value = '祝日';
+            } else if (isWeekend) {
+                noteSelect.value = '休日';
+            } else {
+                noteSelect.value = '';
+            }
+        }
+
+        // 出社区分を「出社」に戻す
+        const locationBtn = row.querySelector('.work-location-btn');
+        if (locationBtn) {
+            locationBtn.dataset.location = '出社';
+            locationBtn.textContent = '出社';
+            locationBtn.classList.remove('btn-success');
+            locationBtn.classList.add('btn-primary');
+        }
+
+        // 変則勤務・遅刻・早退データをクリア
+        delete row.dataset.irregularType;
+        delete row.dataset.irregularDesc;
+        delete row.dataset.irregularData;
+        delete row.dataset.lateTime;
+        delete row.dataset.lateDesc;
+        delete row.dataset.earlyTime;
+        delete row.dataset.earlyDesc;
+        delete row.dataset.freeNote;
+
+        // 変則勤務ボタンと種類名ラベルを更新
+        const irregularBtn = row.querySelector('.irregular-btn');
+        if (irregularBtn) {
+            irregularBtn.classList.remove('btn-secondary');
+            irregularBtn.classList.add('btn-outline-secondary');
+        }
+        const irregularTypeLabel = row.querySelector('.irregular-type-label');
+        if (irregularTypeLabel) {
+            irregularTypeLabel.textContent = '';
+        }
+
+        // 遅刻・早退ボタンを更新
+        const lateBtn = row.querySelector('.late-btn');
+        if (lateBtn) {
+            lateBtn.classList.remove('has-data');
+        }
+        const earlyBtn = row.querySelector('.early-btn');
+        if (earlyBtn) {
+            earlyBtn.classList.remove('has-data');
+        }
+
+        // 土日祝の場合は入力を無効化
+        const noteValue = noteSelect?.value || '';
+        if (isWeekend || isHoliday) {
+            disableRowInput(row, true, noteValue);
+        } else {
+            setRowEditable(row, true);
+        }
+        updateWorkingDayButton(row, noteValue);
+
+        updateRowMetrics(row);
+        checkRowWarnings(row);
+
+        setTimeout(() => {
+            delete row.dataset.suppressAutoSave;
+            autoSaveRow(row);
+        }, 0);
+    });
+
+    // 全体リセットボタン - 勤務表テーブル全体をリセット
+    const resetAllBtn = document.getElementById('resetAllBtn');
+    if (resetAllBtn) {
+        resetAllBtn.addEventListener('click', () => {
+            if (!confirm('当月の勤務表を全てリセットしますか？\n（勤務時間・休憩・備考・出社区分が初期状態に戻ります）')) {
+                return;
+            }
+
+            const tbody = document.getElementById('tableBody');
+            if (!tbody) return;
+
+            const rows = tbody.querySelectorAll('tr');
+            rows.forEach(row => {
+                row.dataset.suppressAutoSave = '1';
+
+                const cells = {
+                    start: row.querySelector('.time-cell[data-type="start"]'),
+                    end: row.querySelector('.time-cell[data-type="end"]'),
+                    break: row.querySelector('.break-cell'),
+                    duration: row.querySelector('.duration-cell'),
+                    working: row.querySelector('.working-cell')
+                };
+
+                // 勤務時間をクリア
+                Object.values(cells).forEach(cell => {
+                    if (cell) cell.textContent = '';
+                });
+
+                // 日付を取得して土日祝判定
+                const iso = row.querySelector('.date-cell')?.dataset?.iso;
+                const isWeekend = iso ? isWeekendIso(iso) : false;
+                const isHoliday = row.dataset.isHoliday === '1';
+
+                // 備考を初期状態に戻す（土日=休日、祝日=祝日、平日=空欄）
+                const noteSelect = row.querySelector('.note-select');
+                if (noteSelect) {
+                    if (isHoliday) {
+                        noteSelect.value = '祝日';
+                    } else if (isWeekend) {
+                        noteSelect.value = '休日';
+                    } else {
+                        noteSelect.value = '';
+                    }
+                }
+
+                // 出社区分を「出社」に戻す
+                const locationBtn = row.querySelector('.work-location-btn');
+                if (locationBtn) {
+                    locationBtn.dataset.location = '出社';
+                    locationBtn.textContent = '出社';
+                    locationBtn.classList.remove('btn-success');
+                    locationBtn.classList.add('btn-primary');
+                }
+
+                // 変則勤務・遅刻・早退データをクリア
+                delete row.dataset.irregularType;
+                delete row.dataset.irregularDesc;
+                delete row.dataset.irregularData;
+                delete row.dataset.lateTime;
+                delete row.dataset.lateDesc;
+                delete row.dataset.earlyTime;
+                delete row.dataset.earlyDesc;
+                delete row.dataset.freeNote;
+
+                // ボタンの表示を更新
+                const irregularBtn = row.querySelector('.irregular-btn');
+                if (irregularBtn) {
+                    irregularBtn.classList.remove('btn-secondary');
+                    irregularBtn.classList.add('btn-outline-secondary');
+                }
+                const lateBtn = row.querySelector('.late-btn');
+                if (lateBtn) {
+                    lateBtn.classList.remove('has-data');
+                }
+                const earlyBtn = row.querySelector('.early-btn');
+                if (earlyBtn) {
+                    earlyBtn.classList.remove('has-data');
+                }
+                const freeNoteBtn = row.querySelector('.free-note-btn');
+                if (freeNoteBtn) {
+                    freeNoteBtn.classList.remove('has-data');
+                    const freeNoteText = row.querySelector('.free-note-text');
+                    if (freeNoteText) {
+                        freeNoteText.textContent = '';
+                        freeNoteText.style.display = 'none';
+                    }
+                }
+
+                // 土日祝の場合は入力を無効化
+                const noteValue = noteSelect?.value || '';
+                if (isWeekend || isHoliday) {
+                    disableRowInput(row, true, noteValue);
+                } else {
+                    setRowEditable(row, true);
+                }
+                updateWorkingDayButton(row, noteValue);
+
+                updateRowMetrics(row);
+                checkRowWarnings(row);
+                applyRowShade(row);
+
+                setTimeout(() => {
+                    delete row.dataset.suppressAutoSave;
+                    autoSaveRow(row);
+                }, 0);
+            });
+        });
+    }
+
+    // Define the downloadReport function to handle Excel and PDF downloads
+    async function downloadReport(format) {
+        const msgEl = document.getElementById('reportMessage');
+        try {
+            if (msgEl) msgEl.textContent = 'レポートを生成しています...';
+            const ym = (monthInput && monthInput.value) ? monthInput.value : (new Date().toISOString().substring(0, 7));
+            const [y, m] = ym.split('-').map(Number);
+            const from = `${y}-${String(m).padStart(2, '0')}-01`;
+            const last = new Date(y, m, 0).getDate();
+            const to = `${y}-${String(m).padStart(2, '0')}-${String(last).padStart(2, '0')}`;
+            const username = (window.currentUserName || 'user1');
+            const url = `/timesheet/report/${format}?username=${encodeURIComponent(username)}&from=${from}&to=${to}`;
+            const resp = await fetch(url, {credentials: 'same-origin'});
+            if (!resp.ok) {
+                const text = await resp.text().catch(() => '');
+                if (msgEl) msgEl.textContent = `レポート生成失敗 (${resp.status})`;
+                throw new Error('report fetch failed ' + resp.status + ' ' + text);
+            }
+            const blob = await resp.blob();
+            const disposition = resp.headers.get('Content-Disposition') || '';
+            const fnMatch = /filename\*=UTF-8''(.+)$/.exec(disposition) || /filename=(.+)$/.exec(disposition);
+            const filename = fnMatch ? decodeURIComponent(fnMatch[1].replace(/"/g, '')) : `timesheet_${from}_to_${to}.${format}`;
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            if (msgEl) msgEl.textContent = 'ダウンロード完了';
+        } finally {
+            // download系は各ボタンのスピナーだけで十分なのでグローバルスピナーは使用しない
+        }
+    }
+
+    // UNISS勤務表テンプレートをダウンロードする機能
+    async function downloadUnissXlsx() {
+        const msgEl = document.getElementById('reportMessage');
+        const btn = document.getElementById('downloadUnissXlsx');
+        const origHtml = btn ? btn.innerHTML : '';
+
+        try {
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+            }
+            if (msgEl) msgEl.textContent = 'UNISS勤務表を生成しています...';
+
+            const ym = (monthInput && monthInput.value) ? monthInput.value : (new Date().toISOString().substring(0, 7));
+            const [y, m] = ym.split('-').map(Number);
+            const from = `${y}-${String(m).padStart(2, '0')}-01`;
+            const last = new Date(y, m, 0).getDate();
+            const to = `${y}-${String(m).padStart(2, '0')}-${String(last).padStart(2, '0')}`;
+            const username = (window.currentUserName || 'user1');
+            const url = `/timesheet/report/uniss-xlsx?username=${encodeURIComponent(username)}&from=${from}&to=${to}`;
+
+            const resp = await fetch(url, {credentials: 'same-origin'});
+            if (!resp.ok) {
+                const text = await resp.text().catch(() => '');
+                if (msgEl) msgEl.textContent = `UNISS勤務表生成失敗 (${resp.status})`;
+                throw new Error('UNISS report fetch failed ' + resp.status + ' ' + text);
+            }
+
+            const blob = await resp.blob();
+            const disposition = resp.headers.get('Content-Disposition') || '';
+            const fnMatch = /filename\*=UTF-8''(.+)$/.exec(disposition) || /filename=(.+)$/.exec(disposition);
+            const defaultFilename = `${y}年${String(m).padStart(2, '0')}月度UNISS勤務表(${username}).xlsx`;
+            const filename = fnMatch ? decodeURIComponent(fnMatch[1].replace(/"/g, '')) : defaultFilename;
+
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+
+            if (msgEl) msgEl.textContent = 'UNISS勤務表ダウンロード完了';
+        } catch (e) {
+            console.error('UNISS download error:', e);
+            if (msgEl) msgEl.textContent = 'UNISS勤務表ダウンロードに失敗しました';
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+            }
+        }
+    }
+
+    // UNISS勤務表ダウンロードボタンのイベントリスナー
+    const unissBtn = document.getElementById('downloadUnissXlsx');
+    if (unissBtn) {
+        unissBtn.addEventListener('click', downloadUnissXlsx);
+    }
+
+    // Ensure previous context menu is closed before opening a new one
+    document.addEventListener('contextmenu', e => {
+        e.preventDefault();
+        const existingMenu = document.getElementById('contextMenu');
+        if (existingMenu) {
+            document.body.removeChild(existingMenu);
+        }
+
+        const menu = document.createElement('div');
+        menu.id = 'contextMenu';
+        menu.style.position = 'fixed';
+        menu.style.top = `${e.clientY}px`;
+        menu.style.left = `${e.clientX}px`;
+        menu.style.backgroundColor = '#fff';
+        menu.style.border = '1px solid #ccc';
+        menu.style.padding = '5px';
+        menu.style.boxShadow = '0 2px 5px rgba(0, 0, 0, 0.2)';
+        menu.style.zIndex = '1000';
+
+        const downloadExcelOption = document.createElement('div');
+        downloadExcelOption.textContent = 'Excelダウンロード';
+        downloadExcelOption.style.cursor = 'pointer';
+        downloadExcelOption.style.padding = '5px';
+        downloadExcelOption.addEventListener('click', () => {
+            downloadReport('xlsx'); // ボタン参照を削除し、直接ダウンロード処理を呼び出す
+            document.body.removeChild(menu);
+        });
+
+        const downloadPdfOption = document.createElement('div');
+        downloadPdfOption.textContent = 'PDFダウンロード';
+        downloadPdfOption.style.cursor = 'pointer';
+        downloadPdfOption.style.padding = '5px';
+        downloadPdfOption.addEventListener('click', () => {
+            downloadReport('pdf'); // ボタン参照を削除し、直接ダウンロード処理を呼び出す
+            document.body.removeChild(menu);
+        });
+
+        const downloadUnissOption = document.createElement('div');
+        downloadUnissOption.textContent = 'UNISS勤務表ダウンロード';
+        downloadUnissOption.style.cursor = 'pointer';
+        downloadUnissOption.style.padding = '5px';
+        downloadUnissOption.style.borderTop = '1px solid #eee';
+        downloadUnissOption.style.marginTop = '3px';
+        downloadUnissOption.style.paddingTop = '8px';
+        downloadUnissOption.addEventListener('click', () => {
+            downloadUnissXlsx();
+            document.body.removeChild(menu);
+        });
+
+        menu.appendChild(downloadExcelOption);
+        menu.appendChild(downloadPdfOption);
+        menu.appendChild(downloadUnissOption);
+        document.body.appendChild(menu);
+
+        document.addEventListener('click', () => {
+            if (document.body.contains(menu)) {
+                document.body.removeChild(menu);
+            }
+        }, {once: true});
+    });
+
+    function adjustNoteColumnWidth() {
+        const noteCells = document.querySelectorAll('.note-cell');
+        let maxWidth = 0;
+
+        noteCells.forEach(cell => {
+            const selectElement = cell.querySelector('.note-select');
+            const contentWidth = selectElement ? selectElement.scrollWidth : cell.scrollWidth;
+            if (contentWidth > maxWidth) {
+                maxWidth = contentWidth;
+            }
+        });
+
+        noteCells.forEach(cell => {
+            cell.style.width = `${maxWidth}px`;
+        });
+    }
+
+    adjustNoteColumnWidth();
+
+    const persistScrollPosition = (() => {
+        let frameId = null;
+
+        return () => {
+            if (frameId !== null) {
+                return;
+            }
+
+            frameId = window.requestAnimationFrame(() => {
+                frameId = null;
+                localStorage.setItem('scrollPosition', String(window.scrollY));
+            });
+        };
+    })();
+
+    // スクロール位置を保存
+    window.addEventListener('scroll', persistScrollPosition, {passive: true});
+
+    // ページ読み込み時にスクロール位置を復元
+    window.addEventListener('load', () => {
+        const savedPosition = localStorage.getItem('scrollPosition');
+        if (savedPosition) {
+            window.scrollTo(0, parseInt(savedPosition, 10));
+        }
+    });
+
+    // デフォルト設定が未入力の場合にモーダルを表示
+    (function checkDefaultSettings() {
+        const defaultStart = document.getElementById('defaultStart');
+        const defaultEnd = document.getElementById('defaultEnd');
+        const defaultBreak = document.getElementById('defaultBreak');
+        const modal = document.getElementById('defaultSettingsModal');
+
+        if (!modal) return;
+
+        // localStorage からデフォルト設定を読み込む
+        const savedStart = localStorage.getItem('defaultStart');
+        const savedEnd = localStorage.getItem('defaultEnd');
+        const savedBreak = localStorage.getItem('defaultBreak');
+
+        if (savedStart) defaultStart.value = savedStart;
+        if (savedEnd) defaultEnd.value = savedEnd;
+        if (savedBreak) defaultBreak.value = savedBreak;
+
+        // デフォルト設定が未入力の場合はモーダルを表示
+        if (!savedStart || !savedEnd || !savedBreak) {
+            const bsModal = new bootstrap.Modal(modal);
+            bsModal.show();
+        }
+
+        // モーダルの保存ボタン
+        const saveBtn = document.getElementById('saveDefaultSettings');
+        if (saveBtn) {
+            saveBtn.addEventListener('click', () => {
+                const modalStart = document.getElementById('modalDefaultStart').value;
+                const modalEnd = document.getElementById('modalDefaultEnd').value;
+                const modalBreak = document.getElementById('modalDefaultBreak').value;
+
+                // メインのデフォルト設定に反映
+                if (defaultStart) defaultStart.value = modalStart;
+                if (defaultEnd) defaultEnd.value = modalEnd;
+                if (defaultBreak) defaultBreak.value = modalBreak;
+
+                // localStorage に保存
+                localStorage.setItem('defaultStart', modalStart);
+                localStorage.setItem('defaultEnd', modalEnd);
+                localStorage.setItem('defaultBreak', modalBreak);
+
+                // モーダルを閉じる
+                bootstrap.Modal.getInstance(modal).hide();
+            });
+        }
+    })();
+
+    function normalizeTimeInput(value) {
+        if (!value) return '';
+        if (TIME_PATTERNS.HH_MM_SS.test(value)) return value.substring(0, 5);
+        return TIME_PATTERNS.HH_MM.test(value) ? value : '';
+    }
+
+    function setUserSettingsStatus(text, isError = false) {
+        if (!userSettingsStatus) return;
+        userSettingsStatus.textContent = text;
+        userSettingsStatus.classList.toggle('text-danger', isError);
+        userSettingsStatus.classList.toggle('text-muted', !isError);
+        if (text) {
+            setTimeout(() => {
+                if (userSettingsStatus.textContent === text) userSettingsStatus.textContent = '';
+            }, 3000);
+        }
+    }
+
+    const USER_SETTINGS_LIMITS = {
+        employeeNumber: 20,
+        displayName: 128
+    };
+
+    function validateUserSettingsPayload(payload) {
+        if (payload.employeeNumber && !/^\d{1,20}$/.test(payload.employeeNumber)) {
+            return '社員番号は数字20桁以内で入力してください';
+        }
+        if (payload.displayName && payload.displayName.length > USER_SETTINGS_LIMITS.displayName) {
+            return '氏名は128文字以内で入力してください';
+        }
+        return '';
+    }
+
+    async function readErrorMessage(resp, fallback) {
+        try {
+            const contentType = resp.headers.get('Content-Type') || '';
+            if (contentType.includes('application/json')) {
+                const body = await resp.json();
+                if (body?.message) return body.message;
+            } else {
+                const body = await resp.text();
+                if (body) return body;
+            }
+        } catch (err) {
+            console.warn('Failed to parse error response:', err);
+        }
+        return fallback;
+    }
+
+    async function loadUserSettings() {
+        if (!companyAffiliation && !branchOffice && !section && !workGroup &&
+            !employeeNumber && !siteRegularHours && !displayName) return;
+        try {
+            const resp = await fetch('/api/user-settings', {credentials: 'same-origin'});
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (companyAffiliation && data.companyAffiliation) companyAffiliation.value = data.companyAffiliation;
+            if (branchOffice && data.branchOffice) branchOffice.value = data.branchOffice;
+            if (section && data.section != null) section.value = String(data.section);
+            if (workGroup && data.workGroup != null) workGroup.value = String(data.workGroup);
+            if (employeeNumber && data.employeeNumber) employeeNumber.value = data.employeeNumber;
+            if (siteRegularHours && data.siteRegularHours) {
+                siteRegularHours.value = normalizeTimeInput(data.siteRegularHours);
+            }
+            if (displayName && data.displayName) displayName.value = data.displayName;
+        } catch (err) {
+            console.warn('Failed to load user settings:', err);
+        }
+    }
+
+    async function saveUserSettings() {
+        const payload = {
+            companyAffiliation: companyAffiliation?.value || '',
+            branchOffice: branchOffice?.value || '',
+            section: section?.value || '',
+            workGroup: workGroup?.value || '',
+            employeeNumber: employeeNumber?.value || '',
+            siteRegularHours: siteRegularHours?.value || '',
+            displayName: displayName?.value || ''
+        };
+        const validationMessage = validateUserSettingsPayload(payload);
+        if (validationMessage) {
+            setUserSettingsStatus(validationMessage, true);
+            return;
+        }
+        const csrf = getCsrf();
+        const headers = {'Content-Type': 'application/json'};
+        if (csrf) headers[csrf.header] = csrf.token;
+        try {
+            const resp = await fetch('/api/user-settings', {
+                method: 'POST',
+                headers,
+                credentials: 'same-origin',
+                body: JSON.stringify(payload)
+            });
+            if (!resp.ok) {
+                const message = await readErrorMessage(resp, '保存に失敗しました');
+                setUserSettingsStatus(message, true);
+                return;
+            }
+            setUserSettingsStatus('保存しました');
+        } catch (err) {
+            console.error('Failed to save user settings:', err);
+            setUserSettingsStatus('保存に失敗しました', true);
+        }
+    }
+
+    if (employeeNumber) {
+        employeeNumber.addEventListener('input', () => {
+            const sanitized = employeeNumber.value.replace(/\D/g, '').slice(0, USER_SETTINGS_LIMITS.employeeNumber);
+            if (employeeNumber.value !== sanitized) employeeNumber.value = sanitized;
+        });
+    }
+
+    if (displayName) {
+        displayName.addEventListener('input', () => {
+            const trimmed = displayName.value.slice(0, USER_SETTINGS_LIMITS.displayName);
+            if (displayName.value !== trimmed) displayName.value = trimmed;
+        });
+    }
+
+    if (saveUserSettingsBtn) {
+        saveUserSettingsBtn.addEventListener('click', () => saveUserSettings());
+    }
+
+    loadUserSettings();
+
+    // サブモーダルのz-indexを調整する関数（フルスクリーンモーダル内で表示される場合）
+    function adjustSubModalZIndex(modalEl) {
+        if (!modalEl) return;
+        modalEl.addEventListener('show.bs.modal', () => {
+            // モーダル自体のz-indexを設定
+            modalEl.style.zIndex = '1060';
+            // backdropのz-indexも調整
+            setTimeout(() => {
+                const backdrops = document.querySelectorAll('.modal-backdrop');
+                backdrops.forEach((bd, idx) => {
+                    bd.style.zIndex = (1055 + idx).toString();
+                });
+            }, 10);
+        });
+    }
+
+    // 変則勤務モーダル
+    let currentIrregularRow = null;
+    let irregularItems = []; // 複数の種類と説明を管理する配列
+    const irregularModal = document.getElementById('irregularWorkModal');
+    const irregularDateLabel = document.getElementById('irregularDateLabel');
+    const irregularType = document.getElementById('irregularType');
+    const irregularDesc = document.getElementById('irregularDesc');
+    const irregularDescError = document.getElementById('irregularDescError');
+    const irregularList = document.getElementById('irregularList');
+    const irregularListEmpty = document.getElementById('irregularListEmpty');
+    const addIrregularItemBtn = document.getElementById('addIrregularItem');
+    const saveIrregularBtn = document.getElementById('saveIrregularWork');
+
+    // 全種類リスト
+    const allIrregularTypes = ['有給休暇', '特別休暇', '欠勤', '振替出勤', '振替休日', '休日出勤'];
+
+    // z-index調整を適用
+    adjustSubModalZIndex(irregularModal);
+
+    // 変則勤務一覧を更新する関数
+    function updateIrregularList() {
+        if (!irregularList) return;
+
+        // 一覧をクリア
+        irregularList.innerHTML = '';
+
+        if (irregularItems.length === 0) {
+            irregularList.innerHTML = '<p class="text-muted small mb-0" id="irregularListEmpty">登録がありません</p>';
+        } else {
+            irregularItems.forEach((item, index) => {
+                const itemEl = document.createElement('div');
+                itemEl.className = 'list-group-item d-flex justify-content-between align-items-start py-2';
+                itemEl.innerHTML = `
+                    <div class="me-2">
+                        <span class="badge bg-primary me-1">${item.type}</span>
+                        <small class="text-muted d-block mt-1">${item.desc}</small>
+                    </div>
+                    <button class="btn btn-sm btn-outline-danger irregular-item-remove" data-index="${index}" type="button">
+                        <i class="bi bi-x"></i>
+                    </button>
+                `;
+                irregularList.appendChild(itemEl);
+            });
+        }
+
+        // プルダウンのオプションを更新（登録済みのものは非表示）
+        updateIrregularTypeOptions();
+
+        // 完了ボタンの状態を更新
+        updateSaveButtonState();
+    }
+
+    // プルダウンのオプションを更新
+    function updateIrregularTypeOptions() {
+        if (!irregularType) return;
+
+        const registeredTypes = irregularItems.map(item => item.type);
+
+        // 一旦全てのオプションをリセット
+        irregularType.innerHTML = '<option value="">---</option>';
+
+        allIrregularTypes.forEach(type => {
+            if (!registeredTypes.includes(type)) {
+                const option = document.createElement('option');
+                option.value = type;
+                option.textContent = type;
+                irregularType.appendChild(option);
+            }
+        });
+    }
+
+    // 入力状態に応じてプラスボタンと完了ボタンの表示/非表示を切り替え
+    function updateAddButtonVisibility() {
+        if (!addIrregularItemBtn) return;
+
+        const typeValue = irregularType?.value || '';
+        const descValue = irregularDesc?.value?.trim() || '';
+
+        // 種類と説明の両方が入力されている場合のみプラスボタンを表示
+        if (typeValue && descValue) {
+            addIrregularItemBtn.style.display = 'block';
+        } else {
+            addIrregularItemBtn.style.display = 'none';
+        }
+
+        // エラー表示の更新
+        if (irregularDescError) {
+            if (typeValue && !descValue) {
+                irregularDescError.style.display = 'block';
+            } else {
+                irregularDescError.style.display = 'none';
+            }
+        }
+    }
+
+    // 完了ボタンの状態を更新
+    function updateSaveButtonState() {
+        if (!saveIrregularBtn) return;
+
+        const typeValue = irregularType?.value || '';
+        const descValue = irregularDesc?.value?.trim() || '';
+
+        // 種類が選択されているが説明が空の場合のみ非活性
+        // それ以外（何も入力していない、または両方入力済み、または一覧がある）は活性
+        if (typeValue && !descValue) {
+            // 種類が選択されているが説明が未入力 → 非活性
+            saveIrregularBtn.disabled = true;
+        } else {
+            // 何も入力していない、または両方入力済み、または一覧がある → 活性
+            saveIrregularBtn.disabled = false;
+        }
+    }
+
+    // 変則勤務ボタンのクリック (documentレベルでイベント委譲)
+    document.addEventListener('click', e => {
+        const btn = e.target.closest('#workTable .irregular-btn');
+        if (btn && irregularModal) {
+            currentIrregularRow = btn.closest('tr');
+            const iso = currentIrregularRow.querySelector('.date-cell')?.dataset?.iso || '';
+            irregularDateLabel.textContent = iso;
+
+            // 既存のデータを読み込む
+            const existingData = currentIrregularRow.dataset.irregularData;
+            if (existingData) {
+                try {
+                    irregularItems = JSON.parse(existingData);
+                } catch (err) {
+                    // 旧形式のデータをマイグレーション
+                    const oldType = currentIrregularRow.dataset.irregularType || '';
+                    const oldDesc = currentIrregularRow.dataset.irregularDesc || '';
+                    if (oldType && oldDesc) {
+                        irregularItems = [{type: oldType, desc: oldDesc}];
+                    } else {
+                        irregularItems = [];
+                    }
+                }
+            } else {
+                // 旧形式のデータをマイグレーション
+                const oldType = currentIrregularRow.dataset.irregularType || '';
+                const oldDesc = currentIrregularRow.dataset.irregularDesc || '';
+                if (oldType && oldDesc) {
+                    irregularItems = [{type: oldType, desc: oldDesc}];
+                } else {
+                    irregularItems = [];
+                }
+            }
+
+            // フォームをリセット
+            irregularType.value = '';
+            irregularDesc.value = '';
+
+            // 一覧を更新
+            updateIrregularList();
+            updateAddButtonVisibility();
+
+            const bsModal = new bootstrap.Modal(irregularModal);
+            bsModal.show();
+        }
+    });
+
+    // 一覧からアイテムを削除
+    if (irregularList) {
+        irregularList.addEventListener('click', e => {
+            const removeBtn = e.target.closest('.irregular-item-remove');
+            if (removeBtn) {
+                const index = parseInt(removeBtn.dataset.index, 10);
+                irregularItems.splice(index, 1);
+                updateIrregularList();
+            }
+        });
+    }
+
+    // プラスボタンで一覧に追加
+    if (addIrregularItemBtn) {
+        addIrregularItemBtn.addEventListener('click', () => {
+            const typeValue = irregularType?.value || '';
+            const descValue = irregularDesc?.value?.trim() || '';
+
+            if (typeValue && descValue) {
+                // 重複チェック
+                const exists = irregularItems.some(item => item.type === typeValue);
+                if (!exists) {
+                    irregularItems.push({type: typeValue, desc: descValue});
+                    updateIrregularList();
+
+                    // フォームをリセット
+                    irregularType.value = '';
+                    irregularDesc.value = '';
+                    updateAddButtonVisibility();
+                }
+            }
+        });
+    }
+
+    // 入力変更時にボタン状態を更新
+    if (irregularType) {
+        irregularType.addEventListener('change', () => {
+            updateAddButtonVisibility();
+            updateSaveButtonState();
+        });
+    }
+    if (irregularDesc) {
+        irregularDesc.addEventListener('input', () => {
+            updateAddButtonVisibility();
+            updateSaveButtonState();
+        });
+    }
+
+    // 変則勤務モーダルの全クリアボタン
+    const clearIrregularBtn = document.getElementById('clearIrregularWork');
+    if (clearIrregularBtn) {
+        clearIrregularBtn.addEventListener('click', () => {
+            irregularItems = [];
+            irregularType.value = '';
+            irregularDesc.value = '';
+
+            // 半日休の備考はExcelの有給休暇欄へ反映されるため、変則勤務の全クリア時に解除する。
+            const noteSelect = currentIrregularRow?.querySelector('.note-select');
+            if (noteSelect && (noteSelect.value === '午前休' || noteSelect.value === '午後休')) {
+                const iso = currentIrregularRow.querySelector('.date-cell')?.dataset?.iso || '';
+                const isWeekend = iso ? isWeekendIso(iso) : false;
+                const isHoliday = currentIrregularRow.dataset.isHoliday === '1';
+                noteSelect.value = isHoliday ? '祝日' : (isWeekend ? '休日' : '');
+            }
+
+            updateIrregularList();
+            updateAddButtonVisibility();
+        });
+    }
+
+    if (saveIrregularBtn) {
+        saveIrregularBtn.addEventListener('click', () => {
+            if (currentIrregularRow) {
+                // 入力中のデータがあれば追加
+                const typeValue = irregularType?.value || '';
+                const descValue = irregularDesc?.value?.trim() || '';
+                if (typeValue && descValue) {
+                    const exists = irregularItems.some(item => item.type === typeValue);
+                    if (!exists) {
+                        irregularItems.push({type: typeValue, desc: descValue});
+                    }
+                }
+
+                // データを保存
+                currentIrregularRow.dataset.irregularData = JSON.stringify(irregularItems);
+
+                // 後方互換性のため最初のアイテムをirregularType/Descに設定
+                const firstItem = irregularItems[0] || {type: '', desc: ''};
+                currentIrregularRow.dataset.irregularType = firstItem.type;
+                currentIrregularRow.dataset.irregularDesc = firstItem.desc;
+
+                // ボタンの表示を更新（種類名も表示）
+                const btn = currentIrregularRow.querySelector('.irregular-btn');
+                const typeLabel = currentIrregularRow.querySelector('.irregular-type-label');
+                if (btn) {
+                    if (irregularItems.length > 0) {
+                        btn.classList.remove('btn-outline-secondary');
+                        btn.classList.add('btn-secondary');
+                    } else {
+                        btn.classList.remove('btn-secondary');
+                        btn.classList.add('btn-outline-secondary');
+                    }
+                }
+                if (typeLabel) {
+                    if (irregularItems.length > 1) {
+                        typeLabel.textContent = `${firstItem.type} 他${irregularItems.length - 1}件`;
+                    } else {
+                        typeLabel.textContent = firstItem.type || '';
+                    }
+                }
+
+                // 土日祝判定
+                const iso = currentIrregularRow.querySelector('.date-cell')?.dataset?.iso;
+                const dateForCheck = iso ? new Date(iso + 'T00:00:00') : new Date();
+                const dayOfWeek = dateForCheck.getDay();
+                const isWeekendDay = (dayOfWeek === 0 || dayOfWeek === 6);
+                const isHolidayDay = currentIrregularRow.dataset.isHoliday === '1';
+                const isHolidayOrWeekend = isWeekendDay || isHolidayDay;
+
+                // 土日祝かつ振替出勤・休日出勤の場合
+                const hasWorkingIrregular = irregularItems.some(item => isWorkingIrregularType(item.type));
+
+                if (isHolidayOrWeekend && hasWorkingIrregular) {
+                    // 勤務時間等を活性化
+                    disableRowInput(currentIrregularRow, false, '');
+                    setRowEditable(currentIrregularRow, true);
+
+                    // 備考を「---」にする
+                    const noteSelect = currentIrregularRow.querySelector('.note-select');
+                    if (noteSelect) {
+                        noteSelect.value = '';
+                    }
+
+                    // 出社区分を活性化
+                    const locationBtn = currentIrregularRow.querySelector('.work-location-btn');
+                    if (locationBtn) {
+                        locationBtn.disabled = false;
+                    }
+                } else if (isHolidayOrWeekend && !hasWorkingIrregular) {
+                    // 土日祝で振替出勤・休日出勤以外の場合は無効化（備考に依存）
+                    const noteSelect = currentIrregularRow.querySelector('.note-select');
+                    const noteValue = noteSelect?.value || '';
+                    if (!isWorkingNote(noteValue)) {
+                        disableRowInput(currentIrregularRow, true, noteValue);
+                    }
+                }
+                updateWorkingDayButton(currentIrregularRow);
+
+                // 保存（複数アイテムをJSON形式で保存、空文字列も送信してクリアを明示）
+                saveRowWithExtras(currentIrregularRow, {
+                    irregularWorkType: firstItem.type || '',
+                    irregularWorkDesc: firstItem.desc || '',
+                    irregularWorkData: irregularItems.length > 0 ? JSON.stringify(irregularItems) : ''
+                });
+
+                bootstrap.Modal.getInstance(irregularModal).hide();
+            }
+        });
+    }
+
+    // モーダルが閉じられるときにリセット
+    if (irregularModal) {
+        irregularModal.addEventListener('hidden.bs.modal', () => {
+            irregularItems = [];
+            if (irregularType) irregularType.value = '';
+            if (irregularDesc) irregularDesc.value = '';
+            if (irregularDescError) irregularDescError.style.display = 'none';
+            updateAddButtonVisibility();
+        });
+    }
+
+    // 遅刻モーダル
+    let currentLateRow = null;
+    const lateModal = document.getElementById('lateModal');
+    const lateDateLabel = document.getElementById('lateDateLabel');
+    const lateTimeInput = document.getElementById('lateTimeInput');
+    const lateDescInput = document.getElementById('lateDescInput');
+    const saveLateBtn = document.getElementById('saveLate');
+    const clearLateBtn = document.getElementById('clearLate');
+
+    // z-index調整を適用
+    adjustSubModalZIndex(lateModal);
+
+    // 遅刻モーダルのバリデーション
+    function validateLateModal() {
+        if (saveLateBtn) {
+            if (lateTimeInput.value && lateDescInput.value) {
+                saveLateBtn.disabled = false;
+            } else {
+                saveLateBtn.disabled = true;
+            }
+        }
+    }
+
+    if (lateTimeInput) lateTimeInput.addEventListener('input', validateLateModal);
+    if (lateDescInput) lateDescInput.addEventListener('input', validateLateModal);
+
+    // 遅刻ボタンのクリック (documentレベルでイベント委譲)
+    document.addEventListener('click', e => {
+        const btn = e.target.closest('#workTable .late-btn');
+        if (btn && lateModal) {
+            currentLateRow = btn.closest('tr');
+            const iso = currentLateRow.querySelector('.date-cell')?.dataset?.iso || '';
+            lateDateLabel.textContent = iso;
+
+            // 既存のデータを反映
+            lateTimeInput.value = currentLateRow.dataset.lateTime || '';
+            lateDescInput.value = currentLateRow.dataset.lateDesc || '';
+            validateLateModal();
+
+            const bsModal = new bootstrap.Modal(lateModal);
+            bsModal.show();
+        }
+    });
+
+    if (saveLateBtn) {
+        saveLateBtn.addEventListener('click', () => {
+            if (currentLateRow) {
+                const timeValue = lateTimeInput.value;
+                const descValue = lateDescInput.value;
+
+                currentLateRow.dataset.lateTime = timeValue;
+                currentLateRow.dataset.lateDesc = descValue;
+
+                // ボタンの表示を更新
+                const btn = currentLateRow.querySelector('.late-btn');
+                if (btn) {
+                    if (timeValue) {
+                        btn.classList.add('has-data');
+                    } else {
+                        btn.classList.remove('has-data');
+                    }
+                }
+
+                // 保存（空文字列も送信してクリアを明示）
+                saveRowWithExtras(currentLateRow, {
+                    lateTime: timeValue,
+                    lateDesc: descValue
+                });
+
+                // 完了ボタンを元に戻す
+                saveLateBtn.classList.remove('btn-danger');
+                saveLateBtn.classList.add('btn-primary');
+                saveLateBtn.textContent = '完了';
+                saveLateBtn.disabled = false;
+
+                bootstrap.Modal.getInstance(lateModal).hide();
+            }
+        });
+    }
+
+    if (clearLateBtn) {
+        clearLateBtn.addEventListener('click', () => {
+            lateTimeInput.value = '';
+            lateDescInput.value = '';
+            validateLateModal();
+            // 完了ボタンを強調表示（クリア後は保存が必要）
+            if (saveLateBtn) {
+                saveLateBtn.classList.remove('btn-primary');
+                saveLateBtn.classList.add('btn-danger');
+                saveLateBtn.textContent = '完了（保存必須）';
+                saveLateBtn.disabled = false;
+            }
+        });
+    }
+
+    // モーダルが閉じられるときに完了ボタンをリセット
+    if (lateModal) {
+        lateModal.addEventListener('hidden.bs.modal', () => {
+            if (saveLateBtn) {
+                saveLateBtn.classList.remove('btn-danger');
+                saveLateBtn.classList.add('btn-primary');
+                saveLateBtn.textContent = '完了';
+                saveLateBtn.disabled = false;
+            }
+        });
+    }
+
+    // 早退モーダル
+    let currentEarlyRow = null;
+    const earlyModal = document.getElementById('earlyModal');
+    const earlyDateLabel = document.getElementById('earlyDateLabel');
+    const earlyTimeInput = document.getElementById('earlyTimeInput');
+    const earlyDescInput = document.getElementById('earlyDescInput');
+    const saveEarlyBtn = document.getElementById('saveEarly');
+    const clearEarlyBtn = document.getElementById('clearEarly');
+
+    // z-index調整を適用
+    adjustSubModalZIndex(earlyModal);
+
+    // 早退モーダルのバリデーション
+    function validateEarlyModal() {
+        if (saveEarlyBtn) {
+            if (earlyTimeInput.value && earlyDescInput.value) {
+                saveEarlyBtn.disabled = false;
+            } else {
+                saveEarlyBtn.disabled = true;
+            }
+        }
+    }
+
+    if (earlyTimeInput) earlyTimeInput.addEventListener('input', validateEarlyModal);
+    if (earlyDescInput) earlyDescInput.addEventListener('input', validateEarlyModal);
+
+    // 早退ボタンのクリック (documentレベルでイベント委譲)
+    document.addEventListener('click', e => {
+        const btn = e.target.closest('#workTable .early-btn');
+        if (btn && earlyModal) {
+            currentEarlyRow = btn.closest('tr');
+            const iso = currentEarlyRow.querySelector('.date-cell')?.dataset?.iso || '';
+            earlyDateLabel.textContent = iso;
+
+            // 既存のデータを反映
+            earlyTimeInput.value = currentEarlyRow.dataset.earlyTime || '';
+            earlyDescInput.value = currentEarlyRow.dataset.earlyDesc || '';
+            validateEarlyModal();
+
+            const bsModal = new bootstrap.Modal(earlyModal);
+            bsModal.show();
+        }
+    });
+
+    if (saveEarlyBtn) {
+        saveEarlyBtn.addEventListener('click', () => {
+            if (currentEarlyRow) {
+                const timeValue = earlyTimeInput.value;
+                const descValue = earlyDescInput.value;
+
+                currentEarlyRow.dataset.earlyTime = timeValue;
+                currentEarlyRow.dataset.earlyDesc = descValue;
+
+                // ボタンの表示を更新
+                const btn = currentEarlyRow.querySelector('.early-btn');
+                if (btn) {
+                    if (timeValue) {
+                        btn.classList.add('has-data');
+                    } else {
+                        btn.classList.remove('has-data');
+                    }
+                }
+
+                // 保存（空文字列も送信してクリアを明示）
+                saveRowWithExtras(currentEarlyRow, {
+                    earlyTime: timeValue,
+                    earlyDesc: descValue
+                });
+
+                // 完了ボタンを元に戻す
+                saveEarlyBtn.classList.remove('btn-danger');
+                saveEarlyBtn.classList.add('btn-primary');
+                saveEarlyBtn.textContent = '完了';
+                saveEarlyBtn.disabled = false;
+
+                bootstrap.Modal.getInstance(earlyModal).hide();
+            }
+        });
+    }
+
+    if (clearEarlyBtn) {
+        clearEarlyBtn.addEventListener('click', () => {
+            earlyTimeInput.value = '';
+            earlyDescInput.value = '';
+            validateEarlyModal();
+            // 完了ボタンを強調表示（クリア後は保存が必要）
+            if (saveEarlyBtn) {
+                saveEarlyBtn.classList.remove('btn-primary');
+                saveEarlyBtn.classList.add('btn-danger');
+                saveEarlyBtn.textContent = '完了（保存必須）';
+                saveEarlyBtn.disabled = false;
+            }
+        });
+    }
+
+    // モーダルが閉じられるときに完了ボタンをリセット
+    if (earlyModal) {
+        earlyModal.addEventListener('hidden.bs.modal', () => {
+            if (saveEarlyBtn) {
+                saveEarlyBtn.classList.remove('btn-danger');
+                saveEarlyBtn.classList.add('btn-primary');
+                saveEarlyBtn.textContent = '完了';
+                saveEarlyBtn.disabled = false;
+            }
+        });
+    }
+
+    // 自由備考モーダル
+    let currentFreeNoteRow = null;
+    const freeNoteModal = document.getElementById('freeNoteModal');
+    const freeNoteDateLabel = document.getElementById('freeNoteDateLabel');
+    const freeNoteInput = document.getElementById('freeNoteInput');
+    const saveFreeNoteBtn = document.getElementById('saveFreeNote');
+    const clearFreeNoteBtn = document.getElementById('clearFreeNote');
+
+    // z-index調整を適用
+    adjustSubModalZIndex(freeNoteModal);
+
+    // 自由備考ボタンのクリック (documentレベルでイベント委譲)
+    document.addEventListener('click', e => {
+        const btn = e.target.closest('#workTable .free-note-btn');
+        if (btn && freeNoteModal) {
+            currentFreeNoteRow = btn.closest('tr');
+            const iso = currentFreeNoteRow.querySelector('.date-cell')?.dataset?.iso || '';
+            freeNoteDateLabel.textContent = iso;
+
+            // 既存のデータを反映
+            freeNoteInput.value = currentFreeNoteRow.dataset.freeNote || '';
+
+            const bsModal = new bootstrap.Modal(freeNoteModal);
+            bsModal.show();
+        }
+    });
+
+    if (saveFreeNoteBtn) {
+        saveFreeNoteBtn.addEventListener('click', () => {
+            if (currentFreeNoteRow) {
+                const noteValue = freeNoteInput.value;
+
+                currentFreeNoteRow.dataset.freeNote = noteValue;
+
+                // ボタンの表示を更新
+                const btn = currentFreeNoteRow.querySelector('.free-note-btn');
+                const noteText = currentFreeNoteRow.querySelector('.free-note-text');
+                if (btn) {
+                    if (noteValue) {
+                        btn.classList.add('has-data');
+                        // テキスト表示を更新（最初の50文字までを表示）
+                        if (noteText) {
+                            const displayText = noteValue.length > 50 ? noteValue.substring(0, 50) + '...' : noteValue;
+                            noteText.textContent = displayText;
+                            noteText.style.display = 'inline';
+                        }
+                    } else {
+                        btn.classList.remove('has-data');
+                        if (noteText) {
+                            noteText.textContent = '';
+                            noteText.style.display = 'none';
+                        }
+                    }
+                }
+
+                // 保存（空文字列も送信してクリアを明示）
+                saveRowWithExtras(currentFreeNoteRow, {
+                    freeNote: noteValue
+                });
+
+                bootstrap.Modal.getInstance(freeNoteModal).hide();
+            }
+        });
+    }
+
+    if (clearFreeNoteBtn) {
+        clearFreeNoteBtn.addEventListener('click', () => {
+            freeNoteInput.value = '';
+            if (saveFreeNoteBtn) {
+                saveFreeNoteBtn.classList.remove('btn-danger');
+                saveFreeNoteBtn.classList.add('btn-primary');
+                saveFreeNoteBtn.textContent = '完了';
+                saveFreeNoteBtn.disabled = false;
+            }
+        });
+    }
+
+    // モーダルが閉じられるときにボタンをリセット
+    if (freeNoteModal) {
+        freeNoteModal.addEventListener('hidden.bs.modal', () => {
+            if (saveFreeNoteBtn) {
+                saveFreeNoteBtn.classList.remove('btn-danger');
+                saveFreeNoteBtn.classList.add('btn-primary');
+                saveFreeNoteBtn.textContent = '完了';
+                saveFreeNoteBtn.disabled = false;
+            }
+        });
+    }
+
+    // 拡張データを含めて保存する関数
+    async function saveRowWithExtras(row, extras) {
+        const dateCell = row.querySelector('.date-cell');
+        const startCell = row.querySelector('.time-cell[data-type="start"]');
+        const endCell = row.querySelector('.time-cell[data-type="end"]');
+        const breakCell = row.querySelector('.break-cell');
+        const locationBtn = row.querySelector('.work-location-btn');
+        const noteSelect = row.querySelector('.note-select');
+
+        if (!dateCell) return;
+
+        const iso = dateCell.dataset.iso;
+        const csrf = getCsrf();
+
+        // 拡張フィールドは空文字も送信（サーバー側でクリア判定）
+        const payload = {
+            workDate: iso,
+            startTime: startCell?.textContent.trim() || null,
+            endTime: endCell?.textContent.trim() || null,
+            breakMinutes: breakCell?.textContent.trim() || null,
+            workLocation: locationBtn?.dataset.location || null,
+            // --- は空文字を明示送信し、サーバー側で既存の備考をクリアできるようにする。
+            note: noteSelect ? noteSelect.value : null,
+            // 拡張フィールド: 空文字も送信することでクリアを明示
+            irregularWorkType: row.dataset.irregularType ?? null,
+            irregularWorkDesc: row.dataset.irregularDesc ?? null,
+            lateTime: row.dataset.lateTime ?? null,
+            lateDesc: row.dataset.lateDesc ?? null,
+            earlyTime: row.dataset.earlyTime ?? null,
+            earlyDesc: row.dataset.earlyDesc ?? null,
+            freeNote: row.dataset.freeNote ?? null,
+            ...extras
+        };
+
+        try {
+            const headers = {'Content-Type': 'application/json'};
+            if (csrf) headers[csrf.header] = csrf.token;
+            const resp = await fetch('/timesheet/api/entry', {
+                method: 'POST',
+                headers,
+                credentials: 'same-origin',
+                body: JSON.stringify(payload)
+            });
+            const json = await resp.json().catch(() => ({}));
+            if (!resp.ok || !json.success) {
+                console.warn('[TS] 拡張データ保存失敗', json);
+            }
+        } catch (e) {
+            console.error('[TS] 拡張データ保存エラー', e);
+        }
+    }
+
+    // 実働合計をヘッダーに表示する機能
+    (function () {
+        const tableBody = document.getElementById('tableBody');
+        const headerTotalDisplay = document.getElementById('headerTotalWorkingDisplay');
+        const headerTotalContainer = document.getElementById('headerTotalWorkingContainer');
+        if (!tableBody) return;
+
+        // 表示モード: false=時間(通常), true=ラベル(hover中)
+        let headerTotalLabelMode = false;
+        let lastTotalText = '--';
+
+        function applyHeaderTotalDisplay() {
+            if (!headerTotalDisplay) return;
+            headerTotalDisplay.textContent = headerTotalLabelMode ? '実働合計' : lastTotalText;
+        }
+
+        function parseWorkingCell(text) {
+            if (!text) return 0;
+            const match = text.match(/(\d+)時間(\d+)分/);
+            if (!match) return 0;
+            const hours = parseInt(match[1], 10);
+            const minutes = parseInt(match[2], 10);
+            if (Number.isNaN(hours) || Number.isNaN(minutes)) return 0;
+            return hours * 60 + minutes;
+        }
+
+        function formatMinutes(total) {
+            const hours = Math.floor(total / 60);
+            const minutes = total % 60;
+            return `${hours}時間${minutes}分`;
+        }
+
+        function refreshTotalWorking() {
+            let totalMinutes = 0;
+            tableBody.querySelectorAll('.working-cell').forEach(cell => {
+                totalMinutes += parseWorkingCell(cell.textContent.trim());
+            });
+            lastTotalText = formatMinutes(totalMinutes);
+            applyHeaderTotalDisplay();
+            if (headerTotalContainer) {
+                headerTotalContainer.style.display = '';
+            }
+        }
+
+        if (headerTotalContainer) {
+            headerTotalContainer.addEventListener('mouseenter', () => {
+                headerTotalLabelMode = true;
+                applyHeaderTotalDisplay();
+            });
+            headerTotalContainer.addEventListener('mouseleave', () => {
+                headerTotalLabelMode = false;
+                applyHeaderTotalDisplay();
+            });
+        }
+
+        // グローバルに公開（loadTimesheetDataから呼び出せるように）
+        window.refreshTotalWorking = refreshTotalWorking;
+
+        const observer = new MutationObserver(() => refreshTotalWorking());
+        observer.observe(tableBody, {subtree: true, characterData: true, childList: true});
+
+        window.addEventListener('load', refreshTotalWorking);
+        refreshTotalWorking();
+    })();
+
+    // ========================================
+    // Aipo ログイン機能
+    // ========================================
+    (function initAipoLogin() {
+        const aipoLoginBtn = document.getElementById('aipoLoginBtn');
+        const aipoLogoutBtn = document.getElementById('aipoLogoutBtn');
+        const aipoLoginModal = document.getElementById('aipoLoginModal');
+        const aipoLoginSubmit = document.getElementById('aipoLoginSubmit');
+        const aipoUsername = document.getElementById('aipoUsername');
+        const aipoPassword = document.getElementById('aipoPassword');
+        const aipoLoginError = document.getElementById('aipoLoginError');
+        const aipoLoginErrorMessage = document.getElementById('aipoLoginErrorMessage');
+        const aipoLoginSpinner = document.getElementById('aipoLoginSpinner');
+        const aipoLoginButtonText = document.getElementById('aipoLoginButtonText');
+        const aipoLoginSuccessToast = document.getElementById('aipoLoginSuccessToast');
+        const aipoLoginSuccessMessage = document.getElementById('aipoLoginSuccessMessage');
+
+        if (!aipoLoginBtn || !aipoLoginModal) return;
+
+        let bsModal = null;
+        let bsToast = null;
+
+        // Bootstrap Modalインスタンス取得
+        aipoLoginModal.addEventListener('shown.bs.modal', function () {
+            aipoUsername.focus();
+            // エラーメッセージをリセット
+            aipoLoginError.classList.add('d-none');
+            aipoLoginErrorMessage.textContent = '';
+        });
+
+        // Enterキーでログイン
+        [aipoUsername, aipoPassword].forEach(input => {
+            input.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    aipoLoginSubmit.click();
+                }
+            });
+        });
+
+        // ログインボタンクリック
+        aipoLoginSubmit.addEventListener('click', async function () {
+            const username = aipoUsername.value.trim();
+            const password = aipoPassword.value;
+
+            // バリデーション
+            if (!username) {
+                showAipoError('ユーザー名を入力してください');
+                aipoUsername.focus();
+                return;
+            }
+            if (!password) {
+                showAipoError('パスワードを入力してください');
+                aipoPassword.focus();
+                return;
+            }
+
+            // ローディング状態
+            setLoading(true);
+            hideAipoError();
+
+            try {
+                // CSRFトークン取得
+                const csrfMeta = document.querySelector('meta[name="_csrf"]');
+                const csrfHeaderMeta = document.querySelector('meta[name="_csrf_header"]');
+                const headers = {
+                    'Content-Type': 'application/json'
+                };
+                if (csrfMeta && csrfHeaderMeta) {
+                    headers[csrfHeaderMeta.content] = csrfMeta.content;
+                }
+
+                // 現在表示している年月を取得
+                const monthInput = document.getElementById('monthInput');
+                const yearMonth = monthInput ? monthInput.value : null; // "YYYY-MM"形式
+
+                const response = await fetch('/api/aipo/login', {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify({
+                        username: username,
+                        password: password,
+                        yearMonth: yearMonth
+                    })
+                });
+
+                const result = await response.json();
+
+                if (response.ok && result.success) {
+                    // 成功
+                    closeModal();
+                    // ワークフローURL/依頼作成URLがあれば表示
+                    let message = result.message || 'Aipoへのログインに成功しました';
+                    if (result.createRequestUrl || result.workflowUrl) {
+                        showWorkflowLink(result.workflowUrl, result.createRequestUrl, result.timesheetSelected, result.formPreview);
+                    }
+                    showSuccessToast(message);
+                    // フォームをリセット
+                    aipoUsername.value = '';
+                    aipoPassword.value = '';
+                    // ボタンの状態を更新
+                    updateAipoButtonState(true);
+                } else {
+                    // エラー
+                    showAipoError(result.message || 'ログインに失敗しました');
+                }
+            } catch (error) {
+                console.error('Aipo login error:', error);
+                showAipoError('通信エラーが発生しました。再度お試しください。');
+            } finally {
+                setLoading(false);
+            }
+        });
+
+        function showAipoError(message) {
+            aipoLoginErrorMessage.textContent = message;
+            aipoLoginError.classList.remove('d-none');
+        }
+
+        function hideAipoError() {
+            aipoLoginError.classList.add('d-none');
+            aipoLoginErrorMessage.textContent = '';
+        }
+
+        function setLoading(loading) {
+            aipoLoginSubmit.disabled = loading;
+            if (loading) {
+                aipoLoginSpinner.classList.remove('d-none');
+                aipoLoginButtonText.textContent = 'ログイン中...';
+            } else {
+                aipoLoginSpinner.classList.add('d-none');
+                aipoLoginButtonText.textContent = 'ログイン';
+            }
+        }
+
+        function closeModal() {
+            if (!bsModal) {
+                bsModal = bootstrap.Modal.getInstance(aipoLoginModal);
+            }
+            if (bsModal) {
+                bsModal.hide();
+            }
+        }
+
+        function showSuccessToast(message) {
+            if (aipoLoginSuccessMessage) {
+                aipoLoginSuccessMessage.textContent = message;
+            }
+            if (!bsToast && aipoLoginSuccessToast) {
+                bsToast = new bootstrap.Toast(aipoLoginSuccessToast, {
+                    autohide: true,
+                    delay: 5000
+                });
+            }
+            if (bsToast) {
+                bsToast.show();
+            }
+        }
+
+        // ワークフローリンクを表示するモーダルを作成・表示
+        function showWorkflowLink(workflowUrl, createRequestUrl, timesheetSelected, formPreview) {
+            // formPreviewがある場合は直接プレビュー＆申請モーダルを表示
+            if (formPreview && formPreview.submitButtonId) {
+                showPreviewAndSubmitModal(formPreview);
+            } else if (workflowUrl) {
+                // ワークフローモーダルを表示
+                showWorkflowModal(workflowUrl, createRequestUrl, timesheetSelected, formPreview);
+            } else if (createRequestUrl) {
+                // 依頼作成モーダルを表示
+                showCreateRequestModal(createRequestUrl, timesheetSelected, formPreview);
+            }
+        }
+
+        // ワークフローモーダルを表示
+        function showWorkflowModal(workflowUrl, createRequestUrl, timesheetSelected, formPreview) {
+            // 既存のモーダルがあれば削除
+            let existingModal = document.getElementById('aipoWorkflowModal');
+            if (existingModal) {
+                existingModal.remove();
+            }
+
+            // モーダルHTMLを作成
+            const modalHtml = `
+                <div class="modal fade" id="aipoWorkflowModal" tabindex="-1" aria-hidden="true">
+                    <div class="modal-dialog modal-dialog-centered">
+                        <div class="modal-content">
+                            <div class="modal-header bg-primary text-white">
+                                <h5 class="modal-title"><i class="bi bi-diagram-3 me-2"></i>ワークフロー検出</h5>
+                                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body">
+                                <p class="mb-3">ワークフローのリンクが見つかりました：</p>
+                                <div class="mb-3">
+                                    <label class="form-label fw-bold"><i class="bi bi-link-45deg me-1"></i>ワークフローURL</label>
+                                    <div class="input-group">
+                                        <input type="text" class="form-control form-control-sm" id="workflowUrlInput" value="${workflowUrl}" readonly>
+                                        <button class="btn btn-outline-secondary" type="button" id="copyWorkflowUrl" title="コピー">
+                                            <i class="bi bi-clipboard"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="d-grid">
+                                    <a href="${workflowUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-primary">
+                                        <i class="bi bi-box-arrow-up-right me-1"></i>ワークフローを開く
+                                    </a>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                ${createRequestUrl ? '<button type="button" class="btn btn-success" id="showCreateRequestBtn"><i class="bi bi-arrow-right me-1"></i>次へ（依頼作成）</button>' : ''}
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">閉じる</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // DOMに追加
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+            // モーダルを表示
+            const workflowModal = document.getElementById('aipoWorkflowModal');
+            const bsWorkflowModal = new bootstrap.Modal(workflowModal);
+            let isNavigatingToNext = false; // 次へボタンクリックフラグ
+            bsWorkflowModal.show();
+
+            // コピーボタンのイベント
+            const copyWorkflowBtn = document.getElementById('copyWorkflowUrl');
+            if (copyWorkflowBtn) {
+                copyWorkflowBtn.addEventListener('click', function () {
+                    const urlInput = document.getElementById('workflowUrlInput');
+                    navigator.clipboard.writeText(urlInput.value).then(() => {
+                        this.innerHTML = '<i class="bi bi-check"></i>';
+                        setTimeout(() => {
+                            this.innerHTML = '<i class="bi bi-clipboard"></i>';
+                        }, 2000);
+                    });
+                });
+            }
+
+            // 次へボタンのイベント（依頼作成モーダルを表示）
+            const showCreateRequestBtn = document.getElementById('showCreateRequestBtn');
+            if (showCreateRequestBtn && createRequestUrl) {
+                showCreateRequestBtn.addEventListener('click', function () {
+                    isNavigatingToNext = true;
+                    bsWorkflowModal.hide();
+                });
+            }
+
+            // モーダルが閉じられたら処理
+            workflowModal.addEventListener('hidden.bs.modal', function () {
+                workflowModal.remove();
+                // 次へボタンで閉じた場合は依頼作成モーダルを表示
+                if (isNavigatingToNext && createRequestUrl) {
+                    showCreateRequestModal(createRequestUrl, timesheetSelected, formPreview);
+                }
+            });
+        }
+
+        // 依頼作成モーダルを表示
+        function showCreateRequestModal(createRequestUrl, timesheetSelected, formPreview) {
+            // 既存のモーダルがあれば削除
+            let existingModal = document.getElementById('aipoCreateRequestModal');
+            if (existingModal) {
+                existingModal.remove();
+            }
+
+            // 勤務表選択成功時のバッジ
+            const timesheetBadge = timesheetSelected
+                ? '<div class="alert alert-success py-2 mb-3"><i class="bi bi-check-circle me-1"></i>カテゴリ「勤務表」が自動選択されました</div>'
+                : '';
+
+            // モーダルHTMLを作成
+            const modalHtml = `
+                <div class="modal fade" id="aipoCreateRequestModal" tabindex="-1" aria-hidden="true">
+                    <div class="modal-dialog modal-dialog-centered modal-lg">
+                        <div class="modal-content">
+                            <div class="modal-header bg-success text-white">
+                                <h5 class="modal-title"><i class="bi bi-plus-circle me-2"></i>依頼を作成する</h5>
+                                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body">
+                                ${timesheetBadge}
+                                <p class="mb-3">依頼作成のリンクが見つかりました：</p>
+                                <div class="mb-3">
+                                    <label class="form-label fw-bold"><i class="bi bi-link-45deg me-1"></i>依頼作成URL</label>
+                                    <div class="input-group">
+                                        <input type="text" class="form-control form-control-sm" id="createRequestUrlInput" value="${createRequestUrl}" readonly>
+                                        <button class="btn btn-outline-secondary" type="button" id="copyCreateRequestUrl" title="コピー">
+                                            <i class="bi bi-clipboard"></i>
+                                        </button>
+                                    </div>
+                                    <div class="form-text text-muted small">
+                                        <i class="bi bi-info-circle me-1"></i>JavaScript関数内のURLを抽出しています
+                                    </div>
+                                </div>
+                                <div class="d-grid gap-2">
+                                    <a href="${createRequestUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-outline-success">
+                                        <i class="bi bi-box-arrow-up-right me-1"></i>依頼作成画面を開く（手動）
+                                    </a>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">閉じる</button>
+                                ${formPreview ? '<button type="button" class="btn btn-primary" id="showPreviewBtn"><i class="bi bi-arrow-right me-1"></i>次へ（プレビュー＆申請）</button>' : ''}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // DOMに追加
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+            // モーダルを表示
+            const createRequestModal = document.getElementById('aipoCreateRequestModal');
+            const bsCreateRequestModal = new bootstrap.Modal(createRequestModal);
+            bsCreateRequestModal.show();
+
+            // コピーボタンのイベント
+            const copyCreateBtn = document.getElementById('copyCreateRequestUrl');
+            if (copyCreateBtn) {
+                copyCreateBtn.addEventListener('click', function () {
+                    const urlInput = document.getElementById('createRequestUrlInput');
+                    navigator.clipboard.writeText(urlInput.value).then(() => {
+                        this.innerHTML = '<i class="bi bi-check"></i>';
+                        setTimeout(() => {
+                            this.innerHTML = '<i class="bi bi-clipboard"></i>';
+                        }, 2000);
+                    });
+                });
+            }
+
+            // 次へ（プレビュー）ボタンのイベント
+            const showPreviewBtn = document.getElementById('showPreviewBtn');
+            if (showPreviewBtn && formPreview) {
+                showPreviewBtn.addEventListener('click', function () {
+                    bsCreateRequestModal.hide();
+                });
+
+                createRequestModal.addEventListener('hidden.bs.modal', function onHidden() {
+                    createRequestModal.removeEventListener('hidden.bs.modal', onHidden);
+                    createRequestModal.remove();
+                    // 次へボタンで閉じた場合はプレビュー&申請モーダルを表示
+                    if (showPreviewBtn.dataset.clicked === 'true') {
+                        showPreviewAndSubmitModal(formPreview);
+                    }
+                });
+
+                showPreviewBtn.addEventListener('click', function () {
+                    this.dataset.clicked = 'true';
+                });
+            }
+
+            // 閉じるボタンでモーダルを削除
+            createRequestModal.addEventListener('hidden.bs.modal', function () {
+                if (document.getElementById('aipoCreateRequestModal')) {
+                    this.remove();
+                }
+            });
+        }
+
+        // プレビュー＆申請モーダルを表示
+        function showPreviewAndSubmitModal(formPreview) {
+            // 既存のモーダルがあれば削除
+            let existingModal = document.getElementById('aipoPreviewSubmitModal');
+            if (existingModal) {
+                existingModal.remove();
+            }
+
+            const readyBadge = formPreview.isReady
+                ? '<span class="badge bg-success ms-2"><i class="bi bi-check-circle me-1"></i>申請準備完了</span>'
+                : '<span class="badge bg-warning text-dark ms-2"><i class="bi bi-exclamation-triangle me-1"></i>入力不足</span>';
+
+            const submitDisabled = formPreview.isReady ? '' : 'disabled';
+            const submitButtonId = formPreview.submitButtonId || '';
+
+            // モーダルHTMLを作成
+            const modalHtml = `
+                <div class="modal fade" id="aipoPreviewSubmitModal" tabindex="-1" aria-hidden="true">
+                    <div class="modal-dialog modal-dialog-centered modal-lg">
+                        <div class="modal-content">
+                            <div class="modal-header bg-primary text-white">
+                                <h5 class="modal-title"><i class="bi bi-list-check me-2"></i>申請内容プレビュー</h5>
+                                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="card mb-3">
+                                    <div class="card-header py-2 d-flex align-items-center">
+                                        <i class="bi bi-file-text me-2"></i>
+                                        <strong>入力内容確認</strong>
+                                        ${readyBadge}
+                                    </div>
+                                    <div class="card-body py-2">
+                                        <table class="table table-sm table-bordered mb-0">
+                                            <tbody>
+                                                <tr>
+                                                    <th class="table-light" style="width: 120px;">カテゴリ</th>
+                                                    <td>${formPreview.category || '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>未選択</span>'}</td>
+                                                </tr>
+                                                <tr>
+                                                    <th class="table-light">備考</th>
+                                                    <td>${formPreview.note || '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>未入力</span>'}</td>
+                                                </tr>
+                                                <tr>
+                                                    <th class="table-light">申請経路</th>
+                                                    <td>${formPreview.routeMembers && formPreview.routeMembers.length > 0
+                ? '<ol class="mb-0 ps-3">' + formPreview.routeMembers.map(m => '<li>' + m + '</li>').join('') + '</ol>'
+                : '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>未設定</span>'}</td>
+                                                </tr>
+                                                <tr>
+                                                    <th class="table-light">添付ファイル</th>
+                                                    <td>${formPreview.attachedFileName
+                ? '<i class="bi bi-paperclip me-1"></i>' + formPreview.attachedFileName
+                : '<span class="text-muted">なし</span>'}</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                <div class="card border-info">
+                                    <div class="card-header py-2 bg-info text-white">
+                                        <i class="bi bi-info-circle me-2"></i>申請ボタン情報
+                                    </div>
+                                    <div class="card-body py-2">
+                                        <div class="row align-items-center">
+                                            <div class="col-md-6">
+                                                <small class="text-muted">申請ボタンID:</small><br>
+                                                <code>${submitButtonId || '未検出'}</code>
+                                            </div>
+                                            <div class="col-md-6 text-end">
+                                                ${formPreview.isReady
+                ? '<span class="text-success"><i class="bi bi-check-circle me-1"></i>申請可能</span>'
+                : '<span class="text-warning"><i class="bi bi-exclamation-triangle me-1"></i>入力項目を確認してください</span>'}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                ${!formPreview.isReady ? `
+                                <div class="alert alert-warning mt-3 mb-0">
+                                    <i class="bi bi-exclamation-triangle me-2"></i>
+                                    <strong>注意:</strong> 必須項目が入力されていません。Aipo画面で入力を完了してから申請してください。
+                                </div>
+                                ` : ''}
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">閉じる</button>
+                                <button type="button" class="btn btn-danger" id="submitAipoRequest" ${submitDisabled} data-submit-id="${submitButtonId}">
+                                    <i class="bi bi-send me-1"></i>申請する
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // DOMに追加
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+            // モーダルを表示
+            const previewModal = document.getElementById('aipoPreviewSubmitModal');
+            const bsPreviewModal = new bootstrap.Modal(previewModal);
+            bsPreviewModal.show();
+
+            // 申請ボタンのイベント
+            const submitBtn = document.getElementById('submitAipoRequest');
+            if (submitBtn) {
+                submitBtn.addEventListener('click', async function () {
+                    const submitId = this.dataset.submitId;
+                    if (!submitId) {
+                        alert('申請ボタンIDが見つかりません。Aipo画面から直接申請してください。');
+                        return;
+                    }
+
+                    if (!confirm('この内容で申請しますか？')) {
+                        return;
+                    }
+
+                    // ローディング状態にする
+                    this.disabled = true;
+                    this.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>申請中...';
+
+                    try {
+                        // CSRFトークン取得
+                        const csrfMeta = document.querySelector('meta[name="_csrf"]');
+                        const csrfHeaderMeta = document.querySelector('meta[name="_csrf_header"]');
+                        const headers = {
+                            'Content-Type': 'application/json'
+                        };
+                        if (csrfMeta && csrfHeaderMeta) {
+                            headers[csrfHeaderMeta.content] = csrfMeta.content;
+                        }
+
+                        const response = await fetch('/api/aipo/submit', {
+                            method: 'POST',
+                            headers: headers,
+                            body: JSON.stringify({
+                                submitButtonId: submitId
+                            })
+                        });
+
+                        const result = await response.json();
+
+                        if (response.ok && result.success) {
+                            bsPreviewModal.hide();
+                            showSuccessToast(result.message || '申請が完了しました');
+                        } else {
+                            alert(result.message || '申請に失敗しました');
+                            this.disabled = false;
+                            this.innerHTML = '<i class="bi bi-send me-1"></i>申請する';
+                        }
+                    } catch (error) {
+                        console.error('Submit error:', error);
+                        alert('通信エラーが発生しました');
+                        this.disabled = false;
+                        this.innerHTML = '<i class="bi bi-send me-1"></i>申請する';
+                    }
+                });
+            }
+
+            // モーダルが閉じられたら削除
+            previewModal.addEventListener('hidden.bs.modal', function () {
+                this.remove();
+            });
+        }
+
+        function updateAipoButtonState(loggedIn) {
+            if (loggedIn) {
+                aipoLoginBtn.classList.remove('btn-info');
+                aipoLoginBtn.classList.add('btn-success');
+                aipoLoginBtn.innerHTML = '<i class="bi bi-check-circle"></i> Aipo連携中';
+                aipoLoginBtn.title = 'Aipoにログイン済み';
+                aipoLoginBtn.removeAttribute('data-bs-toggle');
+                aipoLoginBtn.removeAttribute('data-bs-target');
+                // ログアウトボタンを表示
+                if (aipoLogoutBtn) {
+                    aipoLogoutBtn.classList.remove('d-none');
+                }
+            } else {
+                aipoLoginBtn.classList.remove('btn-success');
+                aipoLoginBtn.classList.add('btn-info');
+                aipoLoginBtn.innerHTML = '<i class="bi bi-box-arrow-in-right"></i> Aipo';
+                aipoLoginBtn.title = 'Aipoにログイン';
+                aipoLoginBtn.setAttribute('data-bs-toggle', 'modal');
+                aipoLoginBtn.setAttribute('data-bs-target', '#aipoLoginModal');
+                // ログアウトボタンを非表示
+                if (aipoLogoutBtn) {
+                    aipoLogoutBtn.classList.add('d-none');
+                }
+            }
+        }
+
+        // ログアウト処理
+        if (aipoLogoutBtn) {
+            aipoLogoutBtn.addEventListener('click', async function () {
+                if (!confirm('Aipoからログアウトしますか？')) {
+                    return;
+                }
+
+                aipoLogoutBtn.disabled = true;
+                aipoLogoutBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+                try {
+                    // CSRFトークン取得
+                    const csrfMeta = document.querySelector('meta[name="_csrf"]');
+                    const csrfHeaderMeta = document.querySelector('meta[name="_csrf_header"]');
+                    const headers = {
+                        'Content-Type': 'application/json'
+                    };
+                    if (csrfMeta && csrfHeaderMeta) {
+                        headers[csrfHeaderMeta.content] = csrfMeta.content;
+                    }
+
+                    const response = await fetch('/api/aipo/logout', {
+                        method: 'POST',
+                        headers: headers
+                    });
+
+                    const result = await response.json();
+
+                    if (result.success) {
+                        showSuccessToast('Aipoからログアウトしました');
+                        updateAipoButtonState(false);
+                    } else {
+                        alert(result.message || 'ログアウトに失敗しました');
+                    }
+                } catch (error) {
+                    console.error('Aipo logout error:', error);
+                    alert('通信エラーが発生しました');
+                } finally {
+                    aipoLogoutBtn.disabled = false;
+                    aipoLogoutBtn.innerHTML = '<i class="bi bi-box-arrow-right"></i>';
+                }
+            });
+        }
+
+        // 初期状態を確認
+        async function checkAipoLoginStatus() {
+            try {
+                const response = await fetch('/api/aipo/status');
+                if (response.ok) {
+                    const result = await response.json();
+                    updateAipoButtonState(result.loggedIn);
+                }
+            } catch (error) {
+                console.error('Failed to check Aipo status:', error);
+            }
+        }
+
+        // ページ読み込み時にログイン状態を確認
+        checkAipoLoginStatus();
+    })();
+})();

@@ -1,0 +1,81 @@
+package com.example.demo.controller;
+
+import com.example.demo.mapper.AccessLogMapper;
+import com.example.demo.mapper.BlacklistIpMapper;
+import com.example.demo.mapper.UaBlacklistRuleMapper;
+import com.example.demo.mapper.WhitelistIpMapper;
+import com.example.demo.model.BlacklistIp;
+import com.example.demo.model.IpLatestPath;
+import com.example.demo.model.WhitelistIp;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.stereotype.Controller;
+import org.springframework.ui.Model;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
+
+import java.util.*;
+
+@Controller
+@Validated
+@RequiredArgsConstructor
+public class AdminController {
+
+    private final WhitelistIpMapper whitelistIpMapper;
+    private final BlacklistIpMapper blacklistIpMapper;
+    private final UaBlacklistRuleMapper uaBlacklistRuleMapper;
+    private final AccessLogMapper accessLogMapper;
+
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/manage")
+    public String manage() {
+        return "manage";
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/manage/ip")
+    public String manageIp(Model model) {
+        List<WhitelistIp> whitelist = whitelistIpMapper.getActive();
+        List<BlacklistIp> blacklist = blacklistIpMapper.getAll();
+        model.addAttribute("whitelist", whitelist);
+        model.addAttribute("blacklist", blacklist);
+
+        Set<String> ipSet = new HashSet<>();
+        for (WhitelistIp ip : whitelist) {
+            if (ip.getIpAddress() != null) ipSet.add(ip.getIpAddress());
+        }
+        for (BlacklistIp ip : blacklist) {
+            if (ip.getIpAddress() != null) ipSet.add(ip.getIpAddress());
+        }
+        List<String> ips = ipSet.stream().toList();
+
+        if (!ips.isEmpty()) {
+            List<IpLatestPath> latestList = accessLogMapper.selectLatestPathByIps(ips);
+            Map<String, String> latestPathMap = new HashMap<>();
+            Map<String, String> latestUaMap = new HashMap<>();
+            for (IpLatestPath latest : latestList) {
+                if (latest == null || latest.getIpAddress() == null) {
+                    continue;
+                }
+                latestPathMap.putIfAbsent(latest.getIpAddress(),
+                        latest.getPath() == null ? "" : latest.getPath());
+                latestUaMap.putIfAbsent(latest.getIpAddress(),
+                        latest.getUserAgent() == null ? "" : latest.getUserAgent());
+            }
+            model.addAttribute("latestPathsByIp", latestPathMap);
+            model.addAttribute("latestUserAgentsByIp", latestUaMap);
+        } else {
+            model.addAttribute("latestPathsByIp", new HashMap<String, String>());
+            model.addAttribute("latestUserAgentsByIp", new HashMap<String, String>());
+        }
+        return "manage_ip";
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/manage/ua")
+    public String manageUa(Model model) {
+        model.addAttribute("uaRules", uaBlacklistRuleMapper.selectActive());
+        return "manage_ua";
+    }
+}

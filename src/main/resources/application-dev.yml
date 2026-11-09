@@ -1,0 +1,38 @@
+spring:
+  datasource:
+    url: ${db.url}
+    username: ${db.username}
+    password: ${db.password}
+    hikari:
+      maximum-pool-size: 20
+  flyway:
+    clean-disabled: true
+  data:
+    redis:
+      host: localhost
+
+geoip:
+  mmdb-path: ${location.path:/opt/geoip/GeoLite2-Country.mmdb}
+  allowed-country-codes: JP
+
+app:
+  encryption:
+    key: "CHANGE_ME_LOCAL_ONLY"
+  login:
+    rate-limit:
+      capacity: 10
+      refill-minutes: 1
+  csp:
+    connect-src: "'self' http://localhost:35729 ws://localhost:35729"
+
+server:
+  port: 8080
+  compression:
+    enabled: true
+
+logging:
+  level:
+    com.example.demo: DEBUG
+    org.springframework.web: DEBUG
+    org.springframework.security: DEBUG
+    org.mybatis: DEBUG
